@@ -43,20 +43,41 @@ public class ShopInteractionListener implements Listener {
 		}
 
 		Block block = event.getClickedBlock();
+		Block containerBlock = block;
 
+		// If clicking a sign, get the container it's attached to
 		if (
 			block.getState() instanceof Sign &&
 			block.getBlockData() instanceof WallSign wallSign
 		) {
-			Block attached = block.getRelative(
+			containerBlock = block.getRelative(
 				wallSign.getFacing().getOppositeFace()
 			);
-			handleShopInteraction(event, attached);
+		}
+
+		// Check if this is a shop
+		if (!shopManager.isShop(containerBlock.getLocation())) {
 			return;
 		}
 
-		if (block.getState() instanceof Container) {
-			handleShopInteraction(event, block);
+		Shop shop = shopManager.getShop(containerBlock.getLocation());
+		if (shop == null) {
+			return;
+		}
+
+		Player player = event.getPlayer();
+
+		// Allow shop owners to access their shops
+		if (player.getUniqueId().equals(shop.getOwnerUUID())) {
+			return;
+		}
+
+		// Cancel the interaction and attempt the purchase
+		event.setCancelled(true);
+
+		// Only process the transaction if they clicked the sign or they're sneaking
+		if (block.getState() instanceof Sign || player.isSneaking()) {
+			shopManager.processTransaction(shop, player);
 		}
 	}
 
@@ -64,31 +85,30 @@ public class ShopInteractionListener implements Listener {
 	public void onBlockBreak(BlockBreakEvent event) {
 		Block block = event.getBlock();
 
-		if (
-			configManager.isValidShopContainer(block.getType()) &&
-			shopManager.isShop(block.getLocation())
-		) {
-			Shop shop = shopManager.getShop(block.getLocation());
-			if (shop != null) {
+		// Check if breaking a container
+		if (configManager.isValidShopContainer(block.getType())) {
+			if (shopManager.isShop(block.getLocation())) {
+				Shop shop = shopManager.getShop(block.getLocation());
 				if (
+					shop != null &&
 					!event.getPlayer().getUniqueId().equals(shop.getOwnerUUID())
 				) {
 					event.setCancelled(true);
 					return;
 				}
-				shopManager.removeShop(block.getLocation());
 			}
-			return;
 		}
 
-		if (block.getBlockData() instanceof WallSign wallSign) {
-			Block attached = block.getRelative(
+		// Check if breaking a sign
+		if (
+			block.getState() instanceof Sign &&
+			block.getBlockData() instanceof WallSign wallSign
+		) {
+			Block containerBlock = block.getRelative(
 				wallSign.getFacing().getOppositeFace()
 			);
-			if (
-				attached != null && shopManager.isShop(attached.getLocation())
-			) {
-				Shop shop = shopManager.getShop(attached.getLocation());
+			if (shopManager.isShop(containerBlock.getLocation())) {
+				Shop shop = shopManager.getShop(containerBlock.getLocation());
 				if (
 					shop != null &&
 					!event.getPlayer().getUniqueId().equals(shop.getOwnerUUID())

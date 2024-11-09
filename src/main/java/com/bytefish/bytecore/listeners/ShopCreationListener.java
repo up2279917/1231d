@@ -7,6 +7,7 @@ import java.util.Arrays;
 import java.util.stream.Collectors;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextDecoration;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -73,22 +74,7 @@ public class ShopCreationListener implements Listener {
 			return;
 		}
 
-		if (
-			configManager.isDisplayItemsEnabled() &&
-			configManager.isDisplayItemsOpOnly() &&
-			!event.getPlayer().isOp()
-		) {
-			event
-				.getPlayer()
-				.sendMessage(
-					Component.text(
-						"Only operators can create shops with display items!"
-					).color(NamedTextColor.RED)
-				);
-			event.setCancelled(true);
-			return;
-		}
-
+		// Always allow shop creation, regardless of display item settings
 		try {
 			processShopCreation(event, attachedBlock);
 		} catch (IllegalArgumentException e) {
@@ -318,10 +304,16 @@ public class ShopCreationListener implements Listener {
 		);
 
 		if (shop != null) {
-			event.line(0, Component.text("Selling").color(NamedTextColor.GOLD));
+			// Format the sign with enhanced styling
+			event.line(
+				0,
+				Component.text("Selling")
+					.color(NamedTextColor.GOLD)
+					.decorate(TextDecoration.BOLD)
+			);
 
-			// Format selling line
-			String sellingItemDisplay = formatItemName(
+			// Selling item line
+			String sellingItemName = formatItemName(
 				result.sellingItem.getType(),
 				result.sellingAmount
 			);
@@ -335,17 +327,23 @@ public class ShopCreationListener implements Listener {
 					)
 					.append(Component.text("×").color(NamedTextColor.WHITE))
 					.append(
-						Component.text(sellingItemDisplay).color(
+						Component.text(sellingItemName).color(
 							NamedTextColor.AQUA
 						)
 					)
 					.build()
 			);
 
-			event.line(2, Component.text("For").color(NamedTextColor.GOLD));
+			// "For" line
+			event.line(
+				2,
+				Component.text("For")
+					.color(NamedTextColor.GOLD)
+					.decorate(TextDecoration.BOLD)
+			);
 
-			// Format price line
-			String priceItemDisplay = formatItemName(
+			// Price item line
+			String priceItemName = formatItemName(
 				result.priceItem.getType(),
 				result.priceAmount
 			);
@@ -359,9 +357,7 @@ public class ShopCreationListener implements Listener {
 					)
 					.append(Component.text("×").color(NamedTextColor.WHITE))
 					.append(
-						Component.text(priceItemDisplay).color(
-							NamedTextColor.AQUA
-						)
+						Component.text(priceItemName).color(NamedTextColor.AQUA)
 					)
 					.build()
 			);

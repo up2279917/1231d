@@ -4,21 +4,28 @@ import com.bytefish.bytecore.ByteCore;
 import com.bytefish.bytecore.config.ConfigManager;
 import com.bytefish.bytecore.models.Shop;
 import com.bytefish.bytecore.models.ShopTransaction;
+import com.bytefish.bytecore.util.gson.TypeAdapters;
 import com.google.gson.*;
+import com.google.gson.annotations.Expose;
 import com.google.gson.reflect.TypeToken;
 import java.io.*;
 import java.lang.reflect.Type;
+import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
 import org.bukkit.block.Container;
+import org.bukkit.block.Sign;
+import org.bukkit.block.data.type.WallSign;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
@@ -40,6 +47,8 @@ public class ShopManager {
 	private final File shopsFile;
 	private final Gson gson;
 	private static final String SHOP_DISPLAY_METADATA = "shop_display";
+	private final PlainTextComponentSerializer textSerializer =
+		PlainTextComponentSerializer.plainText();
 
 	public ShopManager(ByteCore plugin, ConfigManager config) {
 		this.plugin = plugin;
@@ -60,32 +69,121 @@ public class ShopManager {
 
 	private Gson createGsonInstance() {
 		return new GsonBuilder()
-			.registerTypeAdapter(Location.class, new LocationAdapter())
-			.registerTypeAdapter(ItemStack.class, new ItemStackAdapter())
+			.excludeFieldsWithoutExposeAnnotation()
+			.registerTypeAdapter(
+				Location.class,
+				new TypeAdapters.LocationAdapter()
+			)
+			.registerTypeAdapter(
+				ItemStack.class,
+				new TypeAdapters.ItemStackAdapter()
+			)
 			.setPrettyPrinting()
 			.create();
 	}
 
-	private void recreateAllDisplayItems() {
+	private static class OptionalTypeAdapter<T>
+		implements JsonSerializer<Optional<T>>, JsonDeserializer<Optional<T>> {
+
+		@Override
+		public JsonElement serialize(
+			Optional<T> src,
+			Type typeOfSrc,
+			JsonSerializationContext context
+		) {
+			return src.map(context::serialize).orElse(JsonNull.INSTANCE);
+		}
+
+		@Override
+		public Optional<T> deserialize(
+			JsonElement json,
+			Type typeOfT,
+			JsonDeserializationContext context
+		) throws JsonParseException {
+			return Optional.ofNullable(
+				json.isJsonNull() ? null : context.deserialize(json, typeOfT)
+			);
+		}
+	}
+
+	public void recreateAllDisplayItems() {
 		cleanupDisplayItems();
 
-		for (Shop shop : shops.values()) {
-			Location loc = shop.getLocation();
+		shops.forEach((location, shop) -> {
 			if (
-				loc.getWorld() != null &&
-				loc
+				location.getWorld() != null &&
+				location
 					.getWorld()
-					.isChunkLoaded(loc.getBlockX() >> 4, loc.getBlockZ() >> 4)
+					.isChunkLoaded(
+						location.getBlockX() >> 4,
+						location.getBlockZ() >> 4
+					)
 			) {
 				createDisplayItem(shop, null);
 			}
-		}
+		});
 
 		plugin
 			.getLogger()
 			.info(
 				"Recreated display items for " + displayItems.size() + " shops"
 			);
+	}
+
+	private boolean verifyShopSign(Location shopLocation) {
+		Block container = shopLocation.getBlock();
+		for (BlockFace face : new BlockFace[] {
+			BlockFace.NORTH,
+			BlockFace.SOUTH,
+			BlockFace.EAST,
+			BlockFace.WEST,
+		}) {
+			Block relative = container.getRelative(face);
+			if (!(relative.getState() instanceof Sign sign)) {
+				continue;
+			}
+
+			if (!(relative.getBlockData() instanceof WallSign wallSign)) {
+				continue;
+			}
+
+			// Check if the sign is actually attached to our container
+			if (wallSign.getFacing().getOppositeFace() != face) {
+				continue;
+			}
+
+			// Get the first line text
+			String firstLine = textSerializer.serialize(sign.line(0));
+			plugin
+				.getLogger()
+				.info(
+					"Checking shop sign at " +
+					relative.getLocation() +
+					", first line: " +
+					firstLine
+				); // Debug log
+
+			// If we find a valid shop sign, return true
+			if (firstLine != null && firstLine.equalsIgnoreCase("Selling")) {
+				return true;
+			}
+		}
+
+		// If we get here, no valid sign was found
+		plugin
+			.getLogger()
+			.warning("No valid shop sign found at " + shopLocation);
+		return false;
+	}
+
+	private void verifyShopIntegrity(Shop shop) {
+		if (!verifyShopSign(shop.getLocation())) {
+			plugin
+				.getLogger()
+				.warning(
+					"Shop at " + shop.getLocation() + " is missing its sign!"
+				);
+		}
 	}
 
 	public Shop addShop(
@@ -142,6 +240,15 @@ public class ShopManager {
 					shop.getLocation().getBlockZ() >> 4
 				)
 		) {
+			return null;
+		}
+
+		if (!verifyShopSign(shop.getLocation())) {
+			buyer.sendMessage(
+				Component.text("This shop's sign is missing!").color(
+					NamedTextColor.RED
+				)
+			);
 			return null;
 		}
 
@@ -408,44 +515,131 @@ public class ShopManager {
 	}
 
 	private void loadShops() {
-		if (!shopsFile.exists()) {
-			return;
+		File backupFile = new File(plugin.getDataFolder(), "shops.json.bak");
+
+		// Try loading main file first
+		if (shopsFile.exists()) {
+			if (loadShopsFromFile(shopsFile)) {
+				return;
+			}
 		}
 
-		try (Reader reader = new FileReader(shopsFile)) {
+		// If main file failed or doesn't exist, try backup
+		if (backupFile.exists()) {
+			if (loadShopsFromFile(backupFile)) {
+				// If backup loaded successfully, save it as main file
+				try {
+					Files.copy(
+						backupFile.toPath(),
+						shopsFile.toPath(),
+						StandardCopyOption.REPLACE_EXISTING
+					);
+				} catch (IOException e) {
+					plugin
+						.getLogger()
+						.warning(
+							"Failed to restore backup file: " + e.getMessage()
+						);
+				}
+			}
+		}
+	}
+
+	public synchronized void saveAll() {
+		File tempFile = new File(plugin.getDataFolder(), "shops.json.tmp");
+		File backupFile = new File(plugin.getDataFolder(), "shops.json.bak");
+		File targetFile = shopsFile;
+
+		try {
+			// Ensure plugin directory exists
+			plugin.getDataFolder().mkdirs();
+
+			// Write to temporary file first
+			try (Writer writer = new FileWriter(tempFile)) {
+				List<Shop> shopList = new ArrayList<>(shops.values());
+				gson.toJson(shopList, writer);
+				writer.flush();
+			}
+
+			// If we have an existing file, create a backup
+			if (targetFile.exists()) {
+				Files.copy(
+					targetFile.toPath(),
+					backupFile.toPath(),
+					StandardCopyOption.REPLACE_EXISTING
+				);
+			}
+
+			// Move temporary file to target location
+			Files.move(
+				tempFile.toPath(),
+				targetFile.toPath(),
+				StandardCopyOption.REPLACE_EXISTING
+			);
+
+			// Delete backup file if everything succeeded
+			if (backupFile.exists()) {
+				backupFile.delete();
+			}
+		} catch (IOException e) {
+			plugin
+				.getLogger()
+				.severe("Failed to save shops: " + e.getMessage());
+			e.printStackTrace();
+
+			// If we failed and have a backup, try to restore it
+			if (backupFile.exists() && !targetFile.exists()) {
+				try {
+					Files.move(
+						backupFile.toPath(),
+						targetFile.toPath(),
+						StandardCopyOption.REPLACE_EXISTING
+					);
+				} catch (IOException restoreError) {
+					plugin
+						.getLogger()
+						.severe(
+							"Failed to restore shops backup: " +
+							restoreError.getMessage()
+						);
+				}
+			}
+		} finally {
+			// Clean up temporary file if it still exists
+			if (tempFile.exists()) {
+				tempFile.delete();
+			}
+		}
+	}
+
+	private boolean loadShopsFromFile(File file) {
+		try (Reader reader = new FileReader(file)) {
 			Type type = new TypeToken<List<Shop>>() {}.getType();
 			List<Shop> loadedShops = gson.fromJson(reader, type);
 
 			if (loadedShops != null) {
 				shops.clear();
 				shopLocks.clear();
+
 				for (Shop shop : loadedShops) {
+					// Verify shop integrity but still load it
+					verifyShopIntegrity(shop);
 					shops.put(shop.getLocation(), shop);
 					shopLocks.put(shop.getLocation(), new ReentrantLock());
 				}
+				return true;
 			}
 		} catch (IOException e) {
 			plugin
 				.getLogger()
-				.severe("Failed to load shops: " + e.getMessage());
+				.severe(
+					"Failed to load shops from " +
+					file.getName() +
+					": " +
+					e.getMessage()
+				);
 		}
-	}
-
-	public void saveAll() {
-		try {
-			if (!shopsFile.exists()) {
-				plugin.getDataFolder().mkdirs();
-				shopsFile.createNewFile();
-			}
-
-			try (Writer writer = new FileWriter(shopsFile)) {
-				gson.toJson(new ArrayList<>(shops.values()), writer);
-			}
-		} catch (IOException e) {
-			plugin
-				.getLogger()
-				.severe("Failed to save shops: " + e.getMessage());
-		}
+		return false;
 	}
 
 	private static class LocationAdapter
@@ -626,12 +820,8 @@ public class ShopManager {
 			return;
 		}
 
+		// If display items are enabled but op-only, and owner is specified and not op, skip display item
 		if (owner != null && config.isDisplayItemsOpOnly() && !owner.isOp()) {
-			owner.sendMessage(
-				Component.text(
-					"Only operators can create shops with display items!"
-				).color(NamedTextColor.RED)
-			);
 			return;
 		}
 
@@ -697,18 +887,20 @@ public class ShopManager {
 	public void handleChunkLoad(Chunk chunk) {
 		if (!config.isDisplayItemsEnabled()) return;
 
-		shops
-			.values()
-			.stream()
-			.filter(shop -> {
-				Location loc = shop.getLocation();
-				return (
-					loc.getWorld().equals(chunk.getWorld()) &&
-					(loc.getBlockX() >> 4) == chunk.getX() &&
-					(loc.getBlockZ() >> 4) == chunk.getZ()
-				);
-			})
-			.forEach(shop -> createDisplayItem(shop, null));
+		// Get all shops in this chunk
+		shops.forEach((location, shop) -> {
+			if (
+				location.getWorld().equals(chunk.getWorld()) &&
+				(location.getBlockX() >> 4) == chunk.getX() &&
+				(location.getBlockZ() >> 4) == chunk.getZ()
+			) {
+				// Remove any existing display item first
+				removeDisplayItem(location);
+
+				// Create new display item
+				createDisplayItem(shop, null);
+			}
+		});
 	}
 
 	public void cleanup() {
