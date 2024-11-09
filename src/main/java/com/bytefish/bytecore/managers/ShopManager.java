@@ -131,16 +131,16 @@ public class ShopManager {
 	}
 
 	public boolean verifyShopSign(Location shopLocation) {
-		Block container = shopLocation.getBlock(); // This should be the barrel
+		Block container = shopLocation.getBlock();
+		plugin.getLogger().info("Verifying shop sign at " + shopLocation); // Log the shop location being verified
+
 		for (BlockFace face : new BlockFace[] {
 			BlockFace.NORTH,
 			BlockFace.SOUTH,
 			BlockFace.EAST,
 			BlockFace.WEST,
 		}) {
-			Block relative = container.getRelative(face); // Check the blocks around the barrel
-
-			// Log the type of the block being checked
+			Block relative = container.getRelative(face);
 			plugin
 				.getLogger()
 				.info(
@@ -148,52 +148,77 @@ public class ShopManager {
 					relative.getLocation() +
 					" of type: " +
 					relative.getType()
-				);
+				); // Log the block being checked
 
 			if (!(relative.getState() instanceof Sign sign)) {
-				continue; // Not a sign, skip to the next face
+				plugin
+					.getLogger()
+					.info(
+						"Block at " + relative.getLocation() + " is not a sign."
+					); // Log if the block is not a sign
+				continue;
 			}
 
 			if (!(relative.getBlockData() instanceof WallSign wallSign)) {
-				continue; // Not a wall sign, skip to the next face
+				plugin
+					.getLogger()
+					.info(
+						"Block at " +
+						relative.getLocation() +
+						" is not a wall sign."
+					); // Log if the sign is not a wall sign
+				continue;
 			}
 
 			// Check if the sign is actually attached to our container
-			if (wallSign.getFacing().getOppositeFace() != face) {
-				continue; // Sign is not attached to this container
+			Block attachedBlock = relative.getRelative(
+				wallSign.getFacing().getOppositeFace()
+			);
+			if (
+				!attachedBlock.getType().isSolid() ||
+				!attachedBlock.equals(container)
+			) {
+				plugin
+					.getLogger()
+					.info(
+						"Sign at " +
+						relative.getLocation() +
+						" is not attached to the container."
+					); // Log if the sign is not attached
+				continue;
 			}
 
 			// Get the first line text
 			String firstLine = textSerializer.serialize(sign.line(0));
-			String secondLine = textSerializer.serialize(sign.line(1)); // Check the second line as well
-
-			// Debug log for checking the sign
 			plugin
 				.getLogger()
 				.info(
-					"Checking shop sign at " +
+					"Found sign at " +
 					relative.getLocation() +
 					", first line: " +
-					firstLine +
-					", second line: " +
-					secondLine
-				);
+					firstLine
+				); // Log the first line of the sign
 
-			// If we find a valid shop sign (e.g., line 0 is "Selling"), return true
-			if (
-				"Selling".equalsIgnoreCase(firstLine) &&
-				secondLine != null &&
-				!secondLine.trim().isEmpty()
-			) {
-				return true; // Valid shop sign found
+			if (firstLine != null && firstLine.equalsIgnoreCase("Selling")) {
+				plugin
+					.getLogger()
+					.info("Valid shop sign found at " + relative.getLocation()); // Log when a valid sign is found
+				return true;
+			} else {
+				plugin
+					.getLogger()
+					.info(
+						"Sign at " +
+						relative.getLocation() +
+						" does not have 'Selling' as the first line."
+					); // Log if the first line is not "Selling"
 			}
 		}
 
-		// If we get here, no valid sign was found
 		plugin
 			.getLogger()
-			.warning("No valid shop sign found at " + shopLocation);
-		return false; // No valid sign detected
+			.warning("No valid shop sign found at " + shopLocation); // Log a warning if no valid sign is found
+		return false;
 	}
 
 	private void verifyShopIntegrity(Shop shop) {
@@ -272,46 +297,6 @@ public class ShopManager {
 			return null;
 		}
 
-		Block block = shop.getLocation().getBlock();
-		if (!(block.getState() instanceof Container container)) {
-			buyer.sendMessage(
-				Component.text("The shop container is invalid!").color(
-					NamedTextColor.RED
-				)
-			);
-			return null;
-		}
-
-		if (
-			!hasStock(
-				container.getInventory(),
-				shop.getSellingItem(),
-				shop.getSellingAmount()
-			)
-		) {
-			buyer.sendMessage(
-				Component.text("The shop is out of stock!").color(
-					NamedTextColor.RED
-				)
-			);
-			return null;
-		}
-
-		if (
-			!hasStock(
-				container.getInventory(),
-				shop.getSellingItem(),
-				shop.getSellingAmount()
-			)
-		) {
-			buyer.sendMessage(
-				Component.text("The shop is out of stock!").color(
-					NamedTextColor.RED
-				)
-			);
-			return null;
-		}
-
 		ReentrantLock lock = shopLocks.computeIfAbsent(shop.getLocation(), k ->
 			new ReentrantLock()
 		);
@@ -321,42 +306,72 @@ public class ShopManager {
 				return null;
 			}
 
-			try {
-				if (!shops.containsKey(shop.getLocation())) {
-					return null;
-				}
-
-				ShopTransaction transaction = new ShopTransaction(
-					shop,
-					buyer,
-					shop.getSellingItem(),
-					shop.getPriceItem()
-				);
-
-				if (!verifyInventories(buyer, container)) {
-					transaction.fail("Invalid inventory state");
-					return transaction;
-				}
-
-				if (!executeTransaction(shop, buyer, container, transaction)) {
-					return transaction;
-				}
-
-				transaction.complete();
+			if (!shops.containsKey(shop.getLocation())) {
 				buyer.sendMessage(
-					Component.text("Purchase successful!").color(
-						NamedTextColor.GREEN
+					Component.text("This shop no longer exists!").color(
+						NamedTextColor.RED
+					)
+				);
+				return null;
+			}
+
+			Block block = shop.getLocation().getBlock();
+			if (!(block.getState() instanceof Container container)) {
+				buyer.sendMessage(
+					Component.text("This shop's container is missing!").color(
+						NamedTextColor.RED
+					)
+				);
+				return null;
+			}
+
+			ShopTransaction transaction = new ShopTransaction(
+				shop,
+				buyer,
+				shop.getSellingItem(),
+				shop.getPriceItem()
+			);
+
+			// Log inventory verification
+			if (!verifyInventories(buyer, container)) {
+				transaction.fail("Invalid inventory state");
+				buyer.sendMessage(
+					Component.text("Your inventory state is invalid!").color(
+						NamedTextColor.RED
 					)
 				);
 				return transaction;
-			} finally {
-				lock.unlock();
 			}
+
+			// Log shop state verification
+			if (!verifyShopState(shop, container, transaction)) {
+				return transaction;
+			}
+
+			// Log buyer inventory verification
+			if (!verifyBuyerInventory(buyer, shop, transaction)) {
+				return transaction;
+			}
+
+			// Execute the transaction
+			if (!executeTransaction(shop, buyer, container, transaction)) {
+				return transaction;
+			}
+
+			transaction.complete();
+			buyer.sendMessage(
+				Component.text("Purchase successful!").color(
+					NamedTextColor.GREEN
+				)
+			);
+			return transaction;
 		} catch (InterruptedException e) {
 			plugin
 				.getLogger()
 				.warning("Shop transaction interrupted: " + e.getMessage());
 			return null;
+		} finally {
+			lock.unlock();
 		}
 	}
 
@@ -403,7 +418,7 @@ public class ShopManager {
 		return true;
 	}
 
-	private boolean verifyBuyerInventory(
+	public boolean verifyBuyerInventory(
 		Player buyer,
 		Shop shop,
 		ShopTransaction transaction
@@ -477,7 +492,7 @@ public class ShopManager {
 		return true;
 	}
 
-	private boolean hasItems(Inventory inventory, ItemStack item, int amount) {
+	public boolean hasItems(Inventory inventory, ItemStack item, int amount) {
 		int count = 0;
 		for (ItemStack stack : inventory.getContents()) {
 			if (stack != null && stack.isSimilar(item)) {
@@ -488,11 +503,11 @@ public class ShopManager {
 		return false;
 	}
 
-	private boolean hasStock(Inventory inventory, ItemStack item, int amount) {
+	public boolean hasStock(Inventory inventory, ItemStack item, int amount) {
 		return countItems(inventory, item) >= amount;
 	}
 
-	private boolean hasSpace(Inventory inventory, ItemStack item, int amount) {
+	public boolean hasSpace(Inventory inventory, ItemStack item, int amount) {
 		return (
 			inventory.firstEmpty() != -1 ||
 			canStackWith(inventory, item, amount)
@@ -526,7 +541,7 @@ public class ShopManager {
 		return count;
 	}
 
-	private boolean removeItems(
+	public boolean removeItems(
 		Inventory inventory,
 		ItemStack item,
 		int amount

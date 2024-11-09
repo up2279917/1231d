@@ -22,175 +22,180 @@ import org.bukkit.inventory.InventoryHolder;
 
 public class ShopInteractionListener implements Listener {
 
-	private final ShopManager shopManager;
-	private final ConfigManager configManager;
+    private final ShopManager shopManager;
+    private final ConfigManager configManager;
 
-	public ShopInteractionListener(
-		ShopManager shopManager,
-		ConfigManager configManager
-	) {
-		this.shopManager = shopManager;
-		this.configManager = configManager;
-	}
+    public ShopInteractionListener(ShopManager shopManager, ConfigManager configManager) {
+        this.shopManager = shopManager;
+        this.configManager = configManager;
+    }
 
-	@EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
-	public void onPlayerInteract(PlayerInteractEvent event) {
-		if (
-			event.getAction() != Action.RIGHT_CLICK_BLOCK ||
-			event.getClickedBlock() == null
-		) {
-			return;
-		}
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onPlayerInteract(PlayerInteractEvent event) {
+        // Handle both left and right clicks for Bedrock compatibility
+        if ((event.getAction() != Action.RIGHT_CLICK_BLOCK &&
+             event.getAction() != Action.LEFT_CLICK_BLOCK) ||
+            event.getClickedBlock() == null) {
+            return;
+        }
 
-		Block block = event.getClickedBlock();
-		Block containerBlock = block;
+        Block block = event.getClickedBlock();
+        Block containerBlock = block;
+        boolean isSignClick = false;
 
-		// If clicking a sign, get the container it's attached to
-		if (
-			block.getState() instanceof Sign &&
-			block.getBlockData() instanceof WallSign wallSign
-		) {
-			containerBlock = block.getRelative(
-				wallSign.getFacing().getOppositeFace()
-			);
-		}
+        // If clicking a sign, get the container it's attached to
+        if (block.getState() instanceof Sign sign) {
+            if (block.getBlockData() instanceof WallSign wallSign) {
+                containerBlock = block.getRelative(wallSign.getFacing().getOppositeFace());
+                isSignClick = true;
+            } else {
+                return; // Not a wall sign, ignore
+            }
+        }
 
-		// Check if this is a shop
-		if (!shopManager.isShop(containerBlock.getLocation())) {
-			return;
-		}
+        // Check if this is a shop container
+        if (!configManager.isValidShopContainer(containerBlock.getType())) {
+            return;
+        }
 
-		Shop shop = shopManager.getShop(containerBlock.getLocation());
-		if (shop == null) {
-			return;
-		}
+        // Check if this is a shop
+        if (!shopManager.isShop(containerBlock.getLocation())) {
+            return;
+        }
 
-		Player player = event.getPlayer();
+        Shop shop = shopManager.getShop(containerBlock.getLocation());
+        if (shop == null) {
+            return;
+        }
 
-		// Allow shop owners to access their shops
-		if (player.getUniqueId().equals(shop.getOwnerUUID())) {
-			return;
-		}
+        Player player = event.getPlayer();
 
-		if (!shopManager.verifyShopSign(containerBlock.getLocation())) {
-			player.sendMessage(
-				Component.text(
-					"This shop's sign is broken! You cannot purchase from this shop."
-				).color(NamedTextColor.RED)
-			);
-			event.setCancelled(true);
-			return;
-		}
+        // Handle the interaction
+        handleShopInteraction(event, player, shop, containerBlock, isSignClick);
+    }
 
-		// Cancel the interaction and attempt the purchase
-		event.setCancelled(true);
+    private void handleShopInteraction(PlayerInteractEvent event, Player player, Shop shop, Block containerBlock, boolean isSignClick) {
+        // Always cancel the interaction first
+        event.setCancelled(true);
 
-		// Only process the transaction if they clicked the sign or they're sneaking
-		if (block.getState() instanceof Sign) {
-			shopManager.processTransaction(shop, player);
-		}
-	}
+        // Allow shop owners to access their shops normally
+        if (player.getUniqueId().equals(shop.getOwnerUUID())) {
+            if (containerBlock.getState() instanceof Container) {
+                event.setCancelled(false); // Allow container access for owner
+            }
+            return;
+        }
 
-	@EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
-	public void onBlockBreak(BlockBreakEvent event) {
-		Block block = event.getBlock();
+        // For Bedrock compatibility, left click or right click on sign triggers purchase
+        // For containers, only right click triggers purchase
+        boolean shouldPurchase = isSignClick || event.getAction() == Action.RIGHT_CLICK_BLOCK;
 
-		// Check if breaking a container
-		if (configManager.isValidShopContainer(block.getType())) {
-			if (shopManager.isShop(block.getLocation())) {
-				Shop shop = shopManager.getShop(block.getLocation());
-				if (
-					shop != null &&
-					!event.getPlayer().getUniqueId().equals(shop.getOwnerUUID())
-				) {
-					event.setCancelled(true);
-					return;
-				}
-			}
-		}
+        if (!shouldPurchase) {
+            return;
+        }
 
-		// Check if breaking a sign
-		if (
-			block.getState() instanceof Sign &&
-			block.getBlockData() instanceof WallSign wallSign
-		) {
-			Block containerBlock = block.getRelative(
-				wallSign.getFacing().getOppositeFace()
-			);
-			if (shopManager.isShop(containerBlock.getLocation())) {
-				Shop shop = shopManager.getShop(containerBlock.getLocation());
-				if (
-					shop != null &&
-					!event.getPlayer().getUniqueId().equals(shop.getOwnerUUID())
-				) {
-					event.setCancelled(true);
-				}
-			}
-		}
-	}
+        // First verify the shop sign is still valid
+        if (!shopManager.verifyShopSign(containerBlock.getLocation())) {
+            player.sendMessage(Component.text("This shop's sign is broken! Please notify the owner.").color(NamedTextColor.RED));
+            return;
+        }
 
-	private void handleShopInteraction(
-		PlayerInteractEvent event,
-		Block container
-	) {
-		if (!shopManager.isShop(container.getLocation())) {
-			return;
-		}
+        // Get the container
+        if (!(containerBlock.getState() instanceof Container container)) {
+            player.sendMessage(Component.text("This shop's container is missing!").color(NamedTextColor.RED));
+            return;
+        }
 
-		Player player = event.getPlayer();
-		Shop shop = shopManager.getShop(container.getLocation());
+        // Check shop stock
+        if (!shopManager.hasStock(container.getInventory(), shop.getSellingItem(), shop.getSellingAmount())) {
+            player.sendMessage(Component.text("This shop is out of stock!").color(NamedTextColor.RED));
+            return;
+        }
 
-		if (shop == null) {
-			return;
-		}
+        // Check if container has space for payment
+        if (!shopManager.hasSpace(container.getInventory(), shop.getPriceItem(), shop.getPriceAmount())) {
+            player.sendMessage(Component.text("This shop is full and cannot accept payment!").color(NamedTextColor.RED));
+            return;
+        }
 
-		if (player.getUniqueId().equals(shop.getOwnerUUID())) {
-			return;
-		}
+        // Check if player has the payment items
+        if (!shopManager.hasItems(player.getInventory(), shop.getPriceItem(), shop.getPriceAmount())) {
+            String itemName = shop.getPriceItem().getType().toString().toLowerCase().replace('_', ' ');
+            player.sendMessage(Component.text()
+                .append(Component.text("You need ").color(NamedTextColor.RED))
+                .append(Component.text(shop.getPriceAmount() + "x ").color(NamedTextColor.YELLOW))
+                .append(Component.text(itemName).color(NamedTextColor.RED))
+                .append(Component.text(" to make this purchase!").color(NamedTextColor.RED))
+                .build());
+            return;
+        }
 
-		event.setCancelled(true);
-		shopManager.processTransaction(shop, player);
-	}
+        // Check if player has inventory space
+        if (!shopManager.hasSpace(player.getInventory(), shop.getSellingItem(), shop.getSellingAmount())) {
+            player.sendMessage(Component.text("You don't have enough inventory space!").color(NamedTextColor.RED));
+            return;
+        }
 
-	@EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
-	public void onInventoryClick(InventoryClickEvent event) {
-		if (!(event.getWhoClicked() instanceof Player player)) {
-			return;
-		}
+        // Process the transaction
+        shopManager.processTransaction(shop, player);
+    }
 
-		InventoryHolder holder = event.getInventory().getHolder();
-		if (
-			holder instanceof Container container &&
-			shopManager.isShop(container.getLocation())
-		) {
-			Shop shop = shopManager.getShop(container.getLocation());
-			if (
-				shop != null &&
-				!player.getUniqueId().equals(shop.getOwnerUUID())
-			) {
-				event.setCancelled(true);
-			}
-		}
-	}
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onBlockBreak(BlockBreakEvent event) {
+        Block block = event.getBlock();
 
-	@EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
-	public void onInventoryDrag(InventoryDragEvent event) {
-		if (!(event.getWhoClicked() instanceof Player player)) {
-			return;
-		}
+        // Check if breaking a container
+        if (configManager.isValidShopContainer(block.getType())) {
+            if (shopManager.isShop(block.getLocation())) {
+                Shop shop = shopManager.getShop(block.getLocation());
+                if (shop != null && !event.getPlayer().getUniqueId().equals(shop.getOwnerUUID())) {
+                    event.setCancelled(true);
+                    event.getPlayer().sendMessage(Component.text("You cannot break another player's shop!").color(NamedTextColor.RED));
+                    return;
+                }
+            }
+        }
 
-		InventoryHolder holder = event.getInventory().getHolder();
-		if (
-			holder instanceof Container container &&
-			shopManager.isShop(container.getLocation())
-		) {
-			Shop shop = shopManager.getShop(container.getLocation());
-			if (
-				shop != null &&
-				!player.getUniqueId().equals(shop.getOwnerUUID())
-			) {
-				event.setCancelled(true);
-			}
-		}
-	}
+        // Check if breaking a sign
+        if (block.getState() instanceof Sign && block.getBlockData() instanceof WallSign wallSign) {
+            Block containerBlock = block.getRelative(wallSign.getFacing().getOppositeFace());
+            if (shopManager.isShop(containerBlock.getLocation())) {
+                Shop shop = shopManager.getShop(containerBlock.getLocation());
+                if (shop != null && !event.getPlayer().getUniqueId().equals(shop.getOwnerUUID())) {
+                    event.setCancelled(true);
+                    event.getPlayer().sendMessage(Component.text("You cannot break another player's shop sign!").color(NamedTextColor.RED));
+                }
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player)) {
+            return;
+        }
+
+        InventoryHolder holder = event.getInventory().getHolder();
+        if (holder instanceof Container container && shopManager.isShop(container.getLocation())) {
+            Shop shop = shopManager.getShop(container.getLocation());
+            if (shop != null && !player.getUniqueId().equals(shop.getOwnerUUID())) {
+                event.setCancelled(true);
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onInventoryDrag(InventoryDragEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player)) {
+            return;
+        }
+
+        InventoryHolder holder = event.getInventory().getHolder();
+        if (holder instanceof Container container && shopManager.isShop(container.getLocation())) {
+            Shop shop = shopManager.getShop(container.getLocation());
+            if (shop != null && !player.getUniqueId().equals(shop.getOwnerUUID())) {
+                event.setCancelled(true);
+            }
+        }
+    }
 }
