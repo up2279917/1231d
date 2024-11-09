@@ -107,32 +107,44 @@ public class ShopManager {
 	}
 
 	public void recreateAllDisplayItems() {
+		// First, do a thorough cleanup of ALL possible display items
 		cleanupDisplayItems();
 
-		shops.forEach((location, shop) -> {
-			if (
-				location.getWorld() != null &&
-				location
-					.getWorld()
-					.isChunkLoaded(
-						location.getBlockX() >> 4,
-						location.getBlockZ() >> 4
-					)
-			) {
-				createDisplayItem(shop, null);
-			}
-		});
-
+		// Wait 1 tick to ensure cleanup is complete
 		plugin
-			.getLogger()
-			.info(
-				"Recreated display items for " + displayItems.size() + " shops"
+			.getServer()
+			.getScheduler()
+			.runTaskLater(
+				plugin,
+				() -> {
+					shops.forEach((location, shop) -> {
+						if (
+							location.getWorld() != null &&
+							location
+								.getWorld()
+								.isChunkLoaded(
+									location.getBlockX() >> 4,
+									location.getBlockZ() >> 4
+								)
+						) {
+							createDisplayItem(shop, null);
+						}
+					});
+
+					plugin
+						.getLogger()
+						.info(
+							"Recreated display items for " +
+							displayItems.size() +
+							" shops"
+						);
+				},
+				1L
 			);
 	}
 
 	public boolean verifyShopSign(Location shopLocation) {
 		Block container = shopLocation.getBlock();
-		plugin.getLogger().info("Verifying shop sign at " + shopLocation); // Log the shop location being verified
 
 		for (BlockFace face : new BlockFace[] {
 			BlockFace.NORTH,
@@ -141,32 +153,12 @@ public class ShopManager {
 			BlockFace.WEST,
 		}) {
 			Block relative = container.getRelative(face);
-			plugin
-				.getLogger()
-				.info(
-					"Checking block at " +
-					relative.getLocation() +
-					" of type: " +
-					relative.getType()
-				); // Log the block being checked
 
 			if (!(relative.getState() instanceof Sign sign)) {
-				plugin
-					.getLogger()
-					.info(
-						"Block at " + relative.getLocation() + " is not a sign."
-					); // Log if the block is not a sign
 				continue;
 			}
 
 			if (!(relative.getBlockData() instanceof WallSign wallSign)) {
-				plugin
-					.getLogger()
-					.info(
-						"Block at " +
-						relative.getLocation() +
-						" is not a wall sign."
-					); // Log if the sign is not a wall sign
 				continue;
 			}
 
@@ -178,46 +170,14 @@ public class ShopManager {
 				!attachedBlock.getType().isSolid() ||
 				!attachedBlock.equals(container)
 			) {
-				plugin
-					.getLogger()
-					.info(
-						"Sign at " +
-						relative.getLocation() +
-						" is not attached to the container."
-					); // Log if the sign is not attached
 				continue;
 			}
 
-			// Get the first line text
 			String firstLine = textSerializer.serialize(sign.line(0));
-			plugin
-				.getLogger()
-				.info(
-					"Found sign at " +
-					relative.getLocation() +
-					", first line: " +
-					firstLine
-				); // Log the first line of the sign
-
 			if (firstLine != null && firstLine.equalsIgnoreCase("Selling")) {
-				plugin
-					.getLogger()
-					.info("Valid shop sign found at " + relative.getLocation()); // Log when a valid sign is found
 				return true;
-			} else {
-				plugin
-					.getLogger()
-					.info(
-						"Sign at " +
-						relative.getLocation() +
-						" does not have 'Selling' as the first line."
-					); // Log if the first line is not "Selling"
 			}
 		}
-
-		plugin
-			.getLogger()
-			.warning("No valid shop sign found at " + shopLocation); // Log a warning if no valid sign is found
 		return false;
 	}
 
@@ -906,8 +866,10 @@ public class ShopManager {
 			return;
 		}
 
+		// Remove any existing display at this location first
 		removeDisplayItem(loc);
 
+		// Create new display item
 		Item item = loc
 			.getWorld()
 			.dropItem(
@@ -919,7 +881,7 @@ public class ShopManager {
 		item.setPersistent(true);
 		item.setVelocity(new Vector(0, 0, 0));
 		item.setGravity(false);
-		item.setGlowing(true);
+		item.setGlowing(false);
 		item.setMetadata(
 			SHOP_DISPLAY_METADATA,
 			new FixedMetadataValue(plugin, shop.getId().toString())
@@ -929,21 +891,28 @@ public class ShopManager {
 	}
 
 	private void cleanupDisplayItems() {
-		displayItems
-			.values()
-			.forEach(item -> {
-				if (item != null && !item.isDead()) {
-					item.remove();
-				}
-			});
+		new HashSet<>(displayItems.values()).forEach(item -> {
+			if (item != null && !item.isDead()) {
+				item.remove();
+			}
+		});
 		displayItems.clear();
 
 		for (World world : plugin.getServer().getWorlds()) {
 			world
-				.getEntitiesByClass(Item.class)
+				.getEntities()
 				.stream()
-				.filter(item -> item.hasMetadata(SHOP_DISPLAY_METADATA))
-				.forEach(Entity::remove);
+				.filter(entity -> entity instanceof Item)
+				.filter(entity -> entity.hasMetadata(SHOP_DISPLAY_METADATA))
+				.forEach(entity -> {
+					plugin
+						.getLogger()
+						.info(
+							"Removing orphaned shop display item at: " +
+							entity.getLocation()
+						);
+					entity.remove();
+				});
 		}
 	}
 
@@ -951,6 +920,25 @@ public class ShopManager {
 		Item item = displayItems.remove(loc);
 		if (item != null && !item.isDead()) {
 			item.remove();
+		}
+
+		// Also check for any other items at this location that might be display items
+		if (loc.getWorld() != null) {
+			loc
+				.getWorld()
+				.getNearbyEntities(
+					loc.clone().add(0.5, config.getDisplayItemHeight(), 0.5),
+					0.5,
+					0.5,
+					0.5
+				)
+				.stream()
+				.filter(
+					entity ->
+						entity instanceof Item &&
+						entity.hasMetadata(SHOP_DISPLAY_METADATA)
+				)
+				.forEach(Entity::remove);
 		}
 	}
 
@@ -967,8 +955,17 @@ public class ShopManager {
 				// Remove any existing display item first
 				removeDisplayItem(location);
 
-				// Create new display item
-				createDisplayItem(shop, null);
+				// Create new display item after a short delay
+				plugin
+					.getServer()
+					.getScheduler()
+					.runTaskLater(
+						plugin,
+						() -> {
+							createDisplayItem(shop, null);
+						},
+						5L
+					);
 			}
 		});
 	}
