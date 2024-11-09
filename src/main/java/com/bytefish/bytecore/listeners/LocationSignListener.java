@@ -2,7 +2,6 @@ package com.bytefish.bytecore.listeners;
 
 import com.bytefish.bytecore.managers.LocationManager;
 import com.bytefish.bytecore.models.Location;
-import java.util.Optional;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
@@ -45,16 +44,11 @@ public class LocationSignListener implements Listener {
 			return;
 		}
 
-		System.out.println(
-			"Attempting to get location by name: " + locationName
-		);
-
-		Optional<Location> existingLocation = locationManager.getLocationByName(
-			locationName
-		);
-		if (existingLocation.isPresent()) {
+		// Check if there's already a location at these exact coordinates
+		org.bukkit.Location signLocation = event.getBlock().getLocation();
+		if (locationManager.hasLocationAtPosition(signLocation)) {
 			player.sendMessage(
-				Component.text("You cannot edit this location sign!").color(
+				Component.text("A location marker already exists here!").color(
 					NamedTextColor.RED
 				)
 			);
@@ -65,8 +59,8 @@ public class LocationSignListener implements Listener {
 		int currentLocations = locationManager.getPlayerLocationCount(
 			player.getUniqueId().toString()
 		);
-
 		int maxLocations = locationManager.getMaxLocationsPerPlayer();
+
 		if (currentLocations >= maxLocations) {
 			event.setCancelled(true);
 			player.sendMessage(
@@ -79,7 +73,6 @@ public class LocationSignListener implements Listener {
 			return;
 		}
 
-		org.bukkit.Location signLocation = event.getBlock().getLocation();
 		locationManager
 			.addLocation(
 				locationName,

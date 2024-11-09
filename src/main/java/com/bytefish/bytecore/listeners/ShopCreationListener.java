@@ -3,6 +3,8 @@ package com.bytefish.bytecore.listeners;
 import com.bytefish.bytecore.config.ConfigManager;
 import com.bytefish.bytecore.managers.ShopManager;
 import com.bytefish.bytecore.models.Shop;
+import java.util.Arrays;
+import java.util.stream.Collectors;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
@@ -199,21 +201,67 @@ public class ShopCreationListener implements Listener {
 		}
 	}
 
-	private String formatItemName(String name) {
-		String formattedName = name.toLowerCase().replace('_', ' ').trim();
-		if (formattedName.length() > 15) {
-			return formattedName.substring(0, 15);
+	private String formatItemName(Material material, int amount) {
+		// Calculate maximum available space for the name
+		// Format: "99x" + name = 15 chars total
+		int amountSpace = String.valueOf(amount).length() + 1; // +1 for 'x'
+		int maxNameLength = 15 - amountSpace;
+
+		// Get the material name and format it
+		String[] words = material
+			.name()
+			.toLowerCase()
+			.replace('_', ' ')
+			.split(" ");
+
+		StringBuilder result = new StringBuilder();
+
+		// Try to fit as many words as possible
+		for (int i = 0; i < words.length; i++) {
+			String word = words[i];
+			// Capitalize first letter
+			word = word.substring(0, 1).toUpperCase() + word.substring(1);
+
+			// If this is not the first word, we need space for the space character
+			int spaceNeeded = result.length() > 0
+				? word.length() + 1
+				: word.length();
+
+			// If we can fit the whole word
+			if (result.length() + spaceNeeded <= maxNameLength) {
+				if (result.length() > 0) {
+					result.append(" ");
+				}
+				result.append(word);
+			} else {
+				// If we can't fit the whole word, try to fit part of it
+				int remainingSpace = maxNameLength - result.length();
+				if (result.length() == 0 && remainingSpace > 0) {
+					// If this is the first word and we have space, take what we can
+					return word.substring(
+						0,
+						Math.min(word.length(), remainingSpace)
+					);
+				} else if (remainingSpace >= 4) { // Only add partial word if we can show at least 4 chars
+					if (result.length() > 0) result.append(" ");
+					result
+						.append(word.substring(0, remainingSpace - 1))
+						.append(".");
+				}
+				break;
+			}
 		}
-		return formattedName;
+
+		return result.toString();
 	}
 
-	private String truncateToSignLimit(String itemName) {
+	private String truncateToSignLimit(String text) {
 		final int MAX_LENGTH = 15;
-
-		if (itemName.length() > MAX_LENGTH) {
-			return itemName.substring(0, MAX_LENGTH);
+		if (text.length() <= MAX_LENGTH) {
+			return text;
 		}
-		return itemName;
+
+		return text.substring(0, MAX_LENGTH);
 	}
 
 	private static class ShopParseResult {
@@ -255,43 +303,49 @@ public class ShopCreationListener implements Listener {
 
 		if (shop != null) {
 			event.line(0, Component.text("Selling").color(NamedTextColor.GOLD));
+
+			// Format selling line
+			String sellingItemDisplay = formatItemName(
+				result.sellingItem.getType(),
+				result.sellingAmount
+			);
 			event.line(
 				1,
 				Component.text()
 					.append(
-						Component.text(
-							String.valueOf(result.sellingAmount)
-						).color(NamedTextColor.YELLOW)
+						Component.text(result.sellingAmount).color(
+							NamedTextColor.YELLOW
+						)
 					)
 					.append(Component.text("×").color(NamedTextColor.WHITE))
 					.append(
-						Component.text(
-							formatItemName(
-								result.sellingItem.getType().name() +
-								" " +
-								result.sellingItem
-									.getType()
-									.toString()
-									.toLowerCase()
-							)
-						).color(NamedTextColor.AQUA)
+						Component.text(sellingItemDisplay).color(
+							NamedTextColor.AQUA
+						)
 					)
 					.build()
 			);
+
 			event.line(2, Component.text("For").color(NamedTextColor.GOLD));
+
+			// Format price line
+			String priceItemDisplay = formatItemName(
+				result.priceItem.getType(),
+				result.priceAmount
+			);
 			event.line(
 				3,
 				Component.text()
 					.append(
-						Component.text(
-							String.valueOf(result.priceAmount)
-						).color(NamedTextColor.YELLOW)
+						Component.text(result.priceAmount).color(
+							NamedTextColor.YELLOW
+						)
 					)
 					.append(Component.text("×").color(NamedTextColor.WHITE))
 					.append(
-						Component.text(
-							formatItemName(result.priceItem.getType().name())
-						).color(NamedTextColor.AQUA)
+						Component.text(priceItemDisplay).color(
+							NamedTextColor.AQUA
+						)
 					)
 					.build()
 			);

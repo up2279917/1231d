@@ -8,9 +8,11 @@ import java.util.Optional;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Sign;
+import org.bukkit.block.data.type.WallSign;
 import org.bukkit.block.sign.Side;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -18,6 +20,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.*;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
 
 public class SignListener implements Listener {
 
@@ -123,6 +126,52 @@ public class SignListener implements Listener {
 			}
 			checkAttachedSigns(block);
 		}
+	}
+
+	@EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+	public void onSignEdit(SignChangeEvent event) {
+		Block block = event.getBlock();
+
+		// Check if this is an existing shop or location sign
+		if (isProtectedSign(block)) {
+			event.setCancelled(true);
+			return;
+		}
+	}
+
+	@EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+	public void onSignClick(PlayerInteractEvent event) {
+		if (
+			event.getClickedBlock() == null || !event.getAction().isRightClick()
+		) {
+			return;
+		}
+
+		Block block = event.getClickedBlock();
+		if (block.getState() instanceof Sign && isProtectedSign(block)) {
+			// Cancel any right-click interaction with protected signs
+			event.setCancelled(true);
+		}
+	}
+
+	private boolean isProtectedSign(Block block) {
+		if (!(block.getState() instanceof Sign sign)) {
+			return false;
+		}
+
+		// Check if it's a shop sign
+		if (block.getBlockData() instanceof WallSign wallSign) {
+			Block attached = block.getRelative(
+				wallSign.getFacing().getOppositeFace()
+			);
+			if (shopManager.isShop(attached.getLocation())) {
+				return true;
+			}
+		}
+
+		// Check if it's a location sign
+		String firstLine = textSerializer.serialize(sign.line(0));
+		return firstLine != null && firstLine.equalsIgnoreCase("Location");
 	}
 
 	private void checkAttachedSigns(Block block) {
@@ -234,6 +283,8 @@ public class SignListener implements Listener {
 		if (!(block.getState() instanceof Sign sign)) {
 			return false;
 		}
+
+		// Check the actual sign content
 		String firstLine = textSerializer.serialize(
 			sign.getSide(Side.FRONT).line(0)
 		);
@@ -242,8 +293,17 @@ public class SignListener implements Listener {
 
 	@EventHandler(priority = EventPriority.LOW, ignoreCancelled = true)
 	public void onSignChange(SignChangeEvent event) {
+		Block block = event.getBlock();
 		String firstLine = textSerializer.serialize(event.line(0));
 
+		// If this is an existing Location sign
+		if (isLocationSign(block)) {
+			// Always cancel edits to existing Location signs
+			event.setCancelled(true);
+			return;
+		}
+
+		// For new signs that aren't Location signs yet
 		if (
 			firstLine.equalsIgnoreCase("Selling") ||
 			firstLine.equalsIgnoreCase("Location")
@@ -251,11 +311,8 @@ public class SignListener implements Listener {
 			return;
 		}
 
-		Block block = event.getBlock();
-		if (block.getState() instanceof Sign) {
-			if (isShopSign(block) || isLocationSign(block)) {
-				event.setCancelled(true);
-			}
+		if (isShopSign(block)) {
+			event.setCancelled(true);
 		}
 	}
 

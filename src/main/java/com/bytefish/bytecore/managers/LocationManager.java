@@ -24,7 +24,6 @@ public class LocationManager {
 	private final ByteCore plugin;
 	private final Map<UUID, Location> locations;
 	private final Map<String, Set<UUID>> playerLocations;
-	private final Map<String, UUID> locationNames;
 	private final File locationsFile;
 	private final Gson gson;
 	private final PlainTextComponentSerializer textSerializer =
@@ -34,11 +33,9 @@ public class LocationManager {
 		this.plugin = plugin;
 		this.locations = new ConcurrentHashMap<>();
 		this.playerLocations = new ConcurrentHashMap<>();
-		this.locationNames = new ConcurrentHashMap<>();
 		this.locationsFile = new File(plugin.getDataFolder(), "locations.json");
 		this.gson = new GsonBuilder().setPrettyPrinting().create();
 		loadLocations();
-
 		scheduleValidation();
 	}
 
@@ -77,61 +74,16 @@ public class LocationManager {
 			);
 
 			Block block = checkLoc.getBlock();
-			plugin
-				.getLogger()
-				.info(
-					"Checking block at " +
-					checkLoc +
-					", type: " +
-					block.getType()
-				);
-
-			if (block.getState() instanceof Sign sign) {
-				String firstLineContent = textSerializer
-					.serialize(sign.line(0))
-					.trim();
-				String secondLineContent = textSerializer
-					.serialize(sign.line(1))
-					.trim();
-
+			if (!(block.getState() instanceof org.bukkit.block.Sign)) {
 				plugin
 					.getLogger()
-					.info(
-						"Sign content - Line 1: '" +
-						firstLineContent +
-						"', Line 2: '" +
-						secondLineContent +
-						"'"
-					);
-
-				if (
-					firstLineContent.equalsIgnoreCase("location") &&
-					secondLineContent.equalsIgnoreCase(location.getName())
-				) {
-					continue;
-				}
+					.info("No sign found for location: " + location.getName());
+				trackRemoval(removalStats, "No Sign");
+				toRemove.add(location.getId());
 			}
-
-			plugin
-				.getLogger()
-				.info(
-					"No valid sign found for location: " + location.getName()
-				);
-			plugin
-				.getLogger()
-				.info("Block type at location: " + block.getType());
-			trackRemoval(removalStats, "Invalid Sign");
-			toRemove.add(location.getId());
 		}
 
 		removeInvalidLocations(toRemove, removalStats);
-
-		plugin
-			.getLogger()
-			.info(
-				"Location validation complete. Remaining locations: " +
-				locations.size()
-			);
 	}
 
 	private void removeInvalidLocations(
@@ -144,7 +96,6 @@ public class LocationManager {
 				playerLocations
 					.getOrDefault(location.getOwner(), new HashSet<>())
 					.remove(id);
-				locationNames.remove(location.getName().toLowerCase());
 			}
 		}
 		plugin
@@ -237,15 +188,8 @@ public class LocationManager {
 				new HashSet<>()
 			)
 			.add(location.getId());
-		locationNames.put(name.toLowerCase(), location.getId()); // Ensure this line is executed
+
 		saveAll();
-
-		plugin
-			.getLogger()
-			.info(
-				"Adding location: " + name + " at " + x + ", " + y + ", " + z
-			);
-
 		return Optional.of(location);
 	}
 
@@ -256,7 +200,6 @@ public class LocationManager {
 			playerLocations
 				.getOrDefault(location.getOwner(), new HashSet<>())
 				.remove(locationId);
-			locationNames.remove(location.getName().toLowerCase());
 			return true;
 		}
 		return false;
@@ -345,13 +288,24 @@ public class LocationManager {
 		if (name == null || name.trim().isEmpty()) {
 			return Optional.empty();
 		}
-		UUID locationId = locationNames.get(name.toLowerCase());
 
-		if (locationId == null) {
-			return Optional.empty();
+		return locations
+			.values()
+			.stream()
+			.filter(loc -> loc.getName().equalsIgnoreCase(name))
+			.findFirst();
+	}
+
+	public List<Location> getAllLocationsByName(String name) {
+		if (name == null || name.trim().isEmpty()) {
+			return Collections.emptyList();
 		}
 
-		return Optional.ofNullable(locations.get(locationId));
+		return locations
+			.values()
+			.stream()
+			.filter(loc -> loc.getName().equalsIgnoreCase(name))
+			.collect(Collectors.toList());
 	}
 
 	public Optional<Location> getLocation(UUID id) {
@@ -401,7 +355,6 @@ public class LocationManager {
 				playerLocations
 					.getOrDefault(location.getOwner(), new HashSet<>())
 					.remove(location.getId());
-				locationNames.remove(location.getName().toLowerCase());
 				saveAll();
 			});
 	}
@@ -419,7 +372,6 @@ public class LocationManager {
 			if (loadedLocations != null) {
 				locations.clear();
 				playerLocations.clear();
-				locationNames.clear();
 
 				for (Location location : loadedLocations) {
 					locations.put(location.getId(), location);
@@ -428,10 +380,6 @@ public class LocationManager {
 							new HashSet<>()
 						)
 						.add(location.getId());
-					locationNames.put(
-						location.getName().toLowerCase(),
-						location.getId()
-					);
 				}
 			}
 		} catch (IOException e) {
@@ -493,5 +441,18 @@ public class LocationManager {
 
 	public int getMaxLocationsPerPlayer() {
 		return plugin.getConfigManager().getMaxLocationsPerPlayer();
+	}
+
+	public boolean hasLocationAtPosition(org.bukkit.Location location) {
+		return locations
+			.values()
+			.stream()
+			.anyMatch(
+				loc ->
+					loc.getWorld().equals(location.getWorld().getName()) &&
+					loc.getX() == location.getX() &&
+					loc.getY() == location.getY() &&
+					loc.getZ() == location.getZ()
+			);
 	}
 }
