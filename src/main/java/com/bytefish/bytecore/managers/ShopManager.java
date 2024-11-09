@@ -130,42 +130,62 @@ public class ShopManager {
 			);
 	}
 
-	private boolean verifyShopSign(Location shopLocation) {
-		Block container = shopLocation.getBlock();
+	public boolean verifyShopSign(Location shopLocation) {
+		Block container = shopLocation.getBlock(); // This should be the barrel
 		for (BlockFace face : new BlockFace[] {
 			BlockFace.NORTH,
 			BlockFace.SOUTH,
 			BlockFace.EAST,
 			BlockFace.WEST,
 		}) {
-			Block relative = container.getRelative(face);
+			Block relative = container.getRelative(face); // Check the blocks around the barrel
+
+			// Log the type of the block being checked
+			plugin
+				.getLogger()
+				.info(
+					"Checking block at " +
+					relative.getLocation() +
+					" of type: " +
+					relative.getType()
+				);
+
 			if (!(relative.getState() instanceof Sign sign)) {
-				continue;
+				continue; // Not a sign, skip to the next face
 			}
 
 			if (!(relative.getBlockData() instanceof WallSign wallSign)) {
-				continue;
+				continue; // Not a wall sign, skip to the next face
 			}
 
 			// Check if the sign is actually attached to our container
 			if (wallSign.getFacing().getOppositeFace() != face) {
-				continue;
+				continue; // Sign is not attached to this container
 			}
 
 			// Get the first line text
 			String firstLine = textSerializer.serialize(sign.line(0));
+			String secondLine = textSerializer.serialize(sign.line(1)); // Check the second line as well
+
+			// Debug log for checking the sign
 			plugin
 				.getLogger()
 				.info(
 					"Checking shop sign at " +
 					relative.getLocation() +
 					", first line: " +
-					firstLine
-				); // Debug log
+					firstLine +
+					", second line: " +
+					secondLine
+				);
 
-			// If we find a valid shop sign, return true
-			if (firstLine != null && firstLine.equalsIgnoreCase("Selling")) {
-				return true;
+			// If we find a valid shop sign (e.g., line 0 is "Selling"), return true
+			if (
+				"Selling".equalsIgnoreCase(firstLine) &&
+				secondLine != null &&
+				!secondLine.trim().isEmpty()
+			) {
+				return true; // Valid shop sign found
 			}
 		}
 
@@ -173,7 +193,7 @@ public class ShopManager {
 		plugin
 			.getLogger()
 			.warning("No valid shop sign found at " + shopLocation);
-		return false;
+		return false; // No valid sign detected
 	}
 
 	private void verifyShopIntegrity(Shop shop) {
@@ -252,6 +272,46 @@ public class ShopManager {
 			return null;
 		}
 
+		Block block = shop.getLocation().getBlock();
+		if (!(block.getState() instanceof Container container)) {
+			buyer.sendMessage(
+				Component.text("The shop container is invalid!").color(
+					NamedTextColor.RED
+				)
+			);
+			return null;
+		}
+
+		if (
+			!hasStock(
+				container.getInventory(),
+				shop.getSellingItem(),
+				shop.getSellingAmount()
+			)
+		) {
+			buyer.sendMessage(
+				Component.text("The shop is out of stock!").color(
+					NamedTextColor.RED
+				)
+			);
+			return null;
+		}
+
+		if (
+			!hasStock(
+				container.getInventory(),
+				shop.getSellingItem(),
+				shop.getSellingAmount()
+			)
+		) {
+			buyer.sendMessage(
+				Component.text("The shop is out of stock!").color(
+					NamedTextColor.RED
+				)
+			);
+			return null;
+		}
+
 		ReentrantLock lock = shopLocks.computeIfAbsent(shop.getLocation(), k ->
 			new ReentrantLock()
 		);
@@ -263,11 +323,6 @@ public class ShopManager {
 
 			try {
 				if (!shops.containsKey(shop.getLocation())) {
-					return null;
-				}
-
-				Block block = shop.getLocation().getBlock();
-				if (!(block.getState() instanceof Container container)) {
 					return null;
 				}
 

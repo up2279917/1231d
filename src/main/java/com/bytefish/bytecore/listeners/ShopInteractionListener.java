@@ -72,11 +72,21 @@ public class ShopInteractionListener implements Listener {
 			return;
 		}
 
+		if (!shopManager.verifyShopSign(containerBlock.getLocation())) {
+			player.sendMessage(
+				Component.text(
+					"This shop's sign is broken! You cannot purchase from this shop."
+				).color(NamedTextColor.RED)
+			);
+			event.setCancelled(true);
+			return;
+		}
+
 		// Cancel the interaction and attempt the purchase
 		event.setCancelled(true);
 
 		// Only process the transaction if they clicked the sign or they're sneaking
-		if (block.getState() instanceof Sign || player.isSneaking()) {
+		if (block.getState() instanceof Sign) {
 			shopManager.processTransaction(shop, player);
 		}
 	}
