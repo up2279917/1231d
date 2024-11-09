@@ -50,6 +50,18 @@ public class ShopCreationListener implements Listener {
 			return;
 		}
 
+		if (shopManager.isShop(attachedBlock.getLocation())) {
+			event
+				.getPlayer()
+				.sendMessage(
+					Component.text("You cannot edit this shop sign!").color(
+						NamedTextColor.RED
+					)
+				);
+			event.setCancelled(true);
+			return;
+		}
+
 		String[] lines = new String[4];
 		for (int i = 0; i < 4; i++) {
 			lines[i] = textSerializer.serialize(event.line(i));
@@ -156,15 +168,13 @@ public class ShopCreationListener implements Listener {
 				);
 			}
 
-			Material sellingMaterial = Material.matchMaterial(
+			Material sellingMaterial = getMaterialFromInput(
 				sellingParts[1].trim()
 			);
-			Material priceMaterial = Material.matchMaterial(
-				priceParts[1].trim()
-			);
+			Material priceMaterial = getMaterialFromInput(priceParts[1].trim());
 
 			if (sellingMaterial == null || priceMaterial == null) {
-				throw new IllegalArgumentException("Invalid item name");
+				throw new IllegalArgumentException("Invalid item name or ID");
 			}
 
 			return new ShopParseResult(
@@ -178,8 +188,32 @@ public class ShopCreationListener implements Listener {
 		}
 	}
 
+	private Material getMaterialFromInput(String input) {
+		try {
+			int itemId = Integer.parseInt(input);
+			return Material.values()[itemId]; // Get Material by its ordinal value
+		} catch (NumberFormatException e) {
+			return Material.matchMaterial(input);
+		} catch (ArrayIndexOutOfBoundsException e) {
+			return null; // or handle it as you see fit
+		}
+	}
+
 	private String formatItemName(String name) {
-		return name.toLowerCase().replace('_', ' ').trim();
+		String formattedName = name.toLowerCase().replace('_', ' ').trim();
+		if (formattedName.length() > 15) {
+			return formattedName.substring(0, 15);
+		}
+		return formattedName;
+	}
+
+	private String truncateToSignLimit(String itemName) {
+		final int MAX_LENGTH = 15;
+
+		if (itemName.length() > MAX_LENGTH) {
+			return itemName.substring(0, MAX_LENGTH);
+		}
+		return itemName;
 	}
 
 	private static class ShopParseResult {
@@ -225,14 +259,21 @@ public class ShopCreationListener implements Listener {
 				1,
 				Component.text()
 					.append(
-						Component.text(result.sellingAmount).color(
-							NamedTextColor.YELLOW
-						)
+						Component.text(
+							String.valueOf(result.sellingAmount)
+						).color(NamedTextColor.YELLOW)
 					)
 					.append(Component.text("×").color(NamedTextColor.WHITE))
 					.append(
 						Component.text(
-							formatItemName(result.sellingItem.getType().name())
+							formatItemName(
+								result.sellingItem.getType().name() +
+								" " +
+								result.sellingItem
+									.getType()
+									.toString()
+									.toLowerCase()
+							)
 						).color(NamedTextColor.AQUA)
 					)
 					.build()
@@ -242,9 +283,9 @@ public class ShopCreationListener implements Listener {
 				3,
 				Component.text()
 					.append(
-						Component.text(result.priceAmount).color(
-							NamedTextColor.YELLOW
-						)
+						Component.text(
+							String.valueOf(result.priceAmount)
+						).color(NamedTextColor.YELLOW)
 					)
 					.append(Component.text("×").color(NamedTextColor.WHITE))
 					.append(

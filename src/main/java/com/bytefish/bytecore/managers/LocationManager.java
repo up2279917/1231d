@@ -237,7 +237,7 @@ public class LocationManager {
 				new HashSet<>()
 			)
 			.add(location.getId());
-		locationNames.put(name.toLowerCase(), location.getId());
+		locationNames.put(name.toLowerCase(), location.getId()); // Ensure this line is executed
 		saveAll();
 
 		plugin
@@ -293,15 +293,6 @@ public class LocationManager {
 			}
 
 			Block block = bukkitLoc.getBlock();
-			plugin
-				.getLogger()
-				.info(
-					"Checking block at " +
-					bukkitLoc +
-					", type: " +
-					block.getType()
-				);
-
 			if (block.getState() instanceof Sign sign) {
 				String firstLine = textSerializer.serialize(sign.line(0));
 				if (!firstLine.equalsIgnoreCase("Location")) {
@@ -351,7 +342,15 @@ public class LocationManager {
 	}
 
 	public Optional<Location> getLocationByName(String name) {
+		if (name == null || name.trim().isEmpty()) {
+			return Optional.empty();
+		}
 		UUID locationId = locationNames.get(name.toLowerCase());
+
+		if (locationId == null) {
+			return Optional.empty();
+		}
+
 		return Optional.ofNullable(locations.get(locationId));
 	}
 

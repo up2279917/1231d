@@ -72,6 +72,7 @@ public class ByteCore extends JavaPlugin {
 		getCommand("checklocations").setExecutor(
 			new CheckLocationsCommand(locationManager)
 		);
+		getCommand("itemname").setExecutor(new ItemNameCommand());
 	}
 
 	private void registerListeners() {

@@ -27,6 +27,9 @@ commands:
     usage: /checklocations
     permission: bytecore.checklocations
     permission-message: You don't have permission to use this command!
+  itemname:
+    description: Get the name of the item you are holding
+    usage: /itemname
 
 permissions:
   bytecore.checklocations:

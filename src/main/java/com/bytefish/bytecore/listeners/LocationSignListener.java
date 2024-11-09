@@ -1,6 +1,8 @@
 package com.bytefish.bytecore.listeners;
 
 import com.bytefish.bytecore.managers.LocationManager;
+import com.bytefish.bytecore.models.Location;
+import java.util.Optional;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
@@ -43,9 +45,27 @@ public class LocationSignListener implements Listener {
 			return;
 		}
 
+		System.out.println(
+			"Attempting to get location by name: " + locationName
+		);
+
+		Optional<Location> existingLocation = locationManager.getLocationByName(
+			locationName
+		);
+		if (existingLocation.isPresent()) {
+			player.sendMessage(
+				Component.text("You cannot edit this location sign!").color(
+					NamedTextColor.RED
+				)
+			);
+			event.setCancelled(true);
+			return;
+		}
+
 		int currentLocations = locationManager.getPlayerLocationCount(
 			player.getUniqueId().toString()
 		);
+
 		int maxLocations = locationManager.getMaxLocationsPerPlayer();
 		if (currentLocations >= maxLocations) {
 			event.setCancelled(true);
