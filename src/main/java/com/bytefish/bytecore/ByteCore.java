@@ -51,6 +51,7 @@ public class ByteCore extends JavaPlugin {
 		}
 
 		if (shopManager != null) {
+			shopManager.cleanup();
 			shopManager.saveAll();
 		}
 		if (locationManager != null) {
@@ -99,6 +100,8 @@ public class ByteCore extends JavaPlugin {
 		pm.registerEvents(new TabListListener(configManager), this);
 
 		pm.registerEvents(new CommandCompletionListener(this), this);
+		pm.registerEvents(new ShopDisplayProtectionListener(), this);
+		pm.registerEvents(new ChunkLoadListener(shopManager), this);
 
 		getServer()
 			.getScheduler()

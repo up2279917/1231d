@@ -6,6 +6,12 @@ shops:
     - BARREL
   enabled-by-default: BARREL
   protection-radius: 0
+  display-items:
+    enabled: true
+    op-only: false
+    float-height: 1.1
+    float-amplitude: 0.05
+    float-frequency: 1.0
 
 # Location Settings
 locations:

@@ -18,6 +18,11 @@ public class ConfigManager {
 	private String serverWebsite;
 	private List<String> serverRules;
 	private int apiPort;
+	private boolean displayItemsEnabled;
+	private boolean displayItemsOpOnly;
+	private double displayItemHeight;
+	private double displayItemAmplitude;
+	private double displayItemFrequency;
 
 	public ConfigManager(JavaPlugin plugin) {
 		this.plugin = plugin;
@@ -40,6 +45,26 @@ public class ConfigManager {
 		);
 		apiPort = config.getInt("api.port", 25578);
 		serverRules = config.getStringList("rules");
+		displayItemsEnabled = config.getBoolean(
+			"shops.display-items.enabled",
+			true
+		);
+		displayItemsOpOnly = config.getBoolean(
+			"shops.display-items.op-only",
+			false
+		);
+		displayItemHeight = config.getDouble(
+			"shops.display-items.float-height",
+			1.2
+		);
+		displayItemAmplitude = config.getDouble(
+			"shops.display-items.float-amplitude",
+			0.1
+		);
+		displayItemFrequency = config.getDouble(
+			"shops.display-items.float-frequency",
+			2.0
+		);
 	}
 
 	private void loadContainerSettings(FileConfiguration config) {
@@ -127,5 +152,25 @@ public class ConfigManager {
 
 	public boolean isValidShopContainer(Material material) {
 		return allowedContainers.contains(material);
+	}
+
+	public boolean isDisplayItemsEnabled() {
+		return displayItemsEnabled;
+	}
+
+	public boolean isDisplayItemsOpOnly() {
+		return displayItemsOpOnly;
+	}
+
+	public double getDisplayItemHeight() {
+		return displayItemHeight;
+	}
+
+	public double getDisplayItemAmplitude() {
+		return displayItemAmplitude;
+	}
+
+	public double getDisplayItemFrequency() {
+		return displayItemFrequency;
 	}
 }

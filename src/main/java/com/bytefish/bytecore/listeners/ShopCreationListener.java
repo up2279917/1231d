@@ -73,6 +73,22 @@ public class ShopCreationListener implements Listener {
 			return;
 		}
 
+		if (
+			configManager.isDisplayItemsEnabled() &&
+			configManager.isDisplayItemsOpOnly() &&
+			!event.getPlayer().isOp()
+		) {
+			event
+				.getPlayer()
+				.sendMessage(
+					Component.text(
+						"Only operators can create shops with display items!"
+					).color(NamedTextColor.RED)
+				);
+			event.setCancelled(true);
+			return;
+		}
+
 		try {
 			processShopCreation(event, attachedBlock);
 		} catch (IllegalArgumentException e) {

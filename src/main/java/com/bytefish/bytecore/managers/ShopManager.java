@@ -14,30 +14,48 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Chunk;
 import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.Container;
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.metadata.FixedMetadataValue;
+import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.util.Vector;
+import org.jetbrains.annotations.Nullable;
 
 public class ShopManager {
 
+	private final Map<Location, Shop> shops = new ConcurrentHashMap<>();
+	private final Map<Location, ReentrantLock> shopLocks =
+		new ConcurrentHashMap<>();
+	private final Map<Location, Item> displayItems = new ConcurrentHashMap<>();
 	private final ByteCore plugin;
 	private final ConfigManager config;
-	private final Map<Location, Shop> shops;
-	private final Map<Location, ReentrantLock> shopLocks;
 	private final File shopsFile;
 	private final Gson gson;
+	private static final String SHOP_DISPLAY_METADATA = "shop_display";
 
 	public ShopManager(ByteCore plugin, ConfigManager config) {
 		this.plugin = plugin;
 		this.config = config;
-		this.shops = new ConcurrentHashMap<>();
-		this.shopLocks = new ConcurrentHashMap<>();
 		this.shopsFile = new File(plugin.getDataFolder(), "shops.json");
 		this.gson = createGsonInstance();
 		loadShops();
+
+		if (config.isDisplayItemsEnabled()) {
+			startFloatingAnimation();
+			// Schedule recreation of display items after server is fully started
+			plugin
+				.getServer()
+				.getScheduler()
+				.runTaskLater(plugin, () -> recreateAllDisplayItems(), 20L);
+		}
 	}
 
 	private Gson createGsonInstance() {
@@ -46,6 +64,28 @@ public class ShopManager {
 			.registerTypeAdapter(ItemStack.class, new ItemStackAdapter())
 			.setPrettyPrinting()
 			.create();
+	}
+
+	private void recreateAllDisplayItems() {
+		cleanupDisplayItems();
+
+		for (Shop shop : shops.values()) {
+			Location loc = shop.getLocation();
+			if (
+				loc.getWorld() != null &&
+				loc
+					.getWorld()
+					.isChunkLoaded(loc.getBlockX() >> 4, loc.getBlockZ() >> 4)
+			) {
+				createDisplayItem(shop, null);
+			}
+		}
+
+		plugin
+			.getLogger()
+			.info(
+				"Recreated display items for " + displayItems.size() + " shops"
+			);
 	}
 
 	public Shop addShop(
@@ -86,6 +126,7 @@ public class ShopManager {
 
 		shops.put(location, shop);
 		shopLocks.put(location, new ReentrantLock());
+		createDisplayItem(shop, owner);
 		saveAll();
 		return shop;
 	}
@@ -243,7 +284,7 @@ public class ShopManager {
 				shop.getSellingAmount()
 			)
 		) {
-			transaction.fail("Failed to remove items from shop");
+			transaction.fail("Shop is out of stock");
 			return false;
 		}
 
@@ -254,13 +295,15 @@ public class ShopManager {
 				shop.getPriceAmount()
 			)
 		) {
+			// Revert the shop inventory change
 			ItemStack revertItem = shop.getSellingItem().clone();
 			revertItem.setAmount(shop.getSellingAmount());
 			container.getInventory().addItem(revertItem);
-			transaction.fail("Failed to process payment");
+			transaction.fail("Insufficient payment");
 			return false;
 		}
 
+		// Complete the transaction
 		ItemStack sellingItems = shop.getSellingItem().clone();
 		sellingItems.setAmount(shop.getSellingAmount());
 		buyer.getInventory().addItem(sellingItems);
@@ -346,26 +389,7 @@ public class ShopManager {
 	}
 
 	public boolean isValidShopLocation(Location location) {
-		Block block = location.getBlock();
-		if (!config.isValidShopContainer(block.getType())) {
-			return false;
-		}
-
-		int radius = config.getProtectionRadius();
-		if (radius > 0) {
-			for (int x = -radius; x <= radius; x++) {
-				for (int y = -radius; y <= radius; y++) {
-					for (int z = -radius; z <= radius; z++) {
-						Location nearby = location.clone().add(x, y, z);
-						if (shops.containsKey(nearby)) {
-							return false;
-						}
-					}
-				}
-			}
-		}
-
-		return true;
+		return config.isValidShopContainer(location.getBlock().getType());
 	}
 
 	public Shop getShop(Location location) {
@@ -377,6 +401,7 @@ public class ShopManager {
 	}
 
 	public void removeShop(Location location) {
+		removeDisplayItem(location);
 		shops.remove(location);
 		shopLocks.remove(location);
 		saveAll();
@@ -384,19 +409,17 @@ public class ShopManager {
 
 	private void loadShops() {
 		if (!shopsFile.exists()) {
-			saveAll();
 			return;
 		}
 
 		try (Reader reader = new FileReader(shopsFile)) {
-			Type listType = new TypeToken<ArrayList<ShopData>>() {}.getType();
-			List<ShopData> shopDataList = gson.fromJson(reader, listType);
+			Type type = new TypeToken<List<Shop>>() {}.getType();
+			List<Shop> loadedShops = gson.fromJson(reader, type);
 
-			if (shopDataList != null) {
+			if (loadedShops != null) {
 				shops.clear();
 				shopLocks.clear();
-				for (ShopData data : shopDataList) {
-					Shop shop = data.toShop();
+				for (Shop shop : loadedShops) {
 					shops.put(shop.getLocation(), shop);
 					shopLocks.put(shop.getLocation(), new ReentrantLock());
 				}
@@ -415,13 +438,8 @@ public class ShopManager {
 				shopsFile.createNewFile();
 			}
 
-			List<ShopData> shopDataList = new ArrayList<>();
-			for (Shop shop : shops.values()) {
-				shopDataList.add(new ShopData(shop));
-			}
-
 			try (Writer writer = new FileWriter(shopsFile)) {
-				gson.toJson(shopDataList, writer);
+				gson.toJson(new ArrayList<>(shops.values()), writer);
 			}
 		} catch (IOException e) {
 			plugin
@@ -570,5 +588,131 @@ public class ShopManager {
 		public ItemStack toItemStack() {
 			return new ItemStack(org.bukkit.Material.valueOf(type), amount);
 		}
+	}
+
+	private void startFloatingAnimation() {
+		new BukkitRunnable() {
+			double tick = 0;
+
+			@Override
+			public void run() {
+				tick += 0.05;
+				displayItems.forEach((loc, item) -> {
+					if (item != null && !item.isDead()) {
+						double newY =
+							loc.getY() +
+							config.getDisplayItemHeight() +
+							Math.sin(tick * config.getDisplayItemFrequency()) *
+							config.getDisplayItemAmplitude();
+						item.teleport(
+							new Location(
+								loc.getWorld(),
+								loc.getX() + 0.5,
+								newY,
+								loc.getZ() + 0.5,
+								item.getLocation().getYaw(),
+								item.getLocation().getPitch()
+							)
+						);
+					}
+				});
+			}
+		}
+			.runTaskTimer(plugin, 1L, 1L);
+	}
+
+	private void createDisplayItem(Shop shop, @Nullable Player owner) {
+		if (!config.isDisplayItemsEnabled()) {
+			return;
+		}
+
+		if (owner != null && config.isDisplayItemsOpOnly() && !owner.isOp()) {
+			owner.sendMessage(
+				Component.text(
+					"Only operators can create shops with display items!"
+				).color(NamedTextColor.RED)
+			);
+			return;
+		}
+
+		Location loc = shop.getLocation();
+		if (loc.getWorld() == null) {
+			plugin
+				.getLogger()
+				.warning(
+					"Attempted to create display item in null world for shop: " +
+					shop.getId()
+				);
+			return;
+		}
+
+		removeDisplayItem(loc);
+
+		Item item = loc
+			.getWorld()
+			.dropItem(
+				loc.clone().add(0.5, config.getDisplayItemHeight(), 0.5),
+				shop.getSellingItem().clone()
+			);
+
+		item.setPickupDelay(Integer.MAX_VALUE);
+		item.setPersistent(true);
+		item.setVelocity(new Vector(0, 0, 0));
+		item.setGravity(false);
+		item.setGlowing(true);
+		item.setMetadata(
+			SHOP_DISPLAY_METADATA,
+			new FixedMetadataValue(plugin, shop.getId().toString())
+		);
+
+		displayItems.put(loc, item);
+	}
+
+	private void cleanupDisplayItems() {
+		displayItems
+			.values()
+			.forEach(item -> {
+				if (item != null && !item.isDead()) {
+					item.remove();
+				}
+			});
+		displayItems.clear();
+
+		for (World world : plugin.getServer().getWorlds()) {
+			world
+				.getEntitiesByClass(Item.class)
+				.stream()
+				.filter(item -> item.hasMetadata(SHOP_DISPLAY_METADATA))
+				.forEach(Entity::remove);
+		}
+	}
+
+	private void removeDisplayItem(Location loc) {
+		Item item = displayItems.remove(loc);
+		if (item != null && !item.isDead()) {
+			item.remove();
+		}
+	}
+
+	public void handleChunkLoad(Chunk chunk) {
+		if (!config.isDisplayItemsEnabled()) return;
+
+		shops
+			.values()
+			.stream()
+			.filter(shop -> {
+				Location loc = shop.getLocation();
+				return (
+					loc.getWorld().equals(chunk.getWorld()) &&
+					(loc.getBlockX() >> 4) == chunk.getX() &&
+					(loc.getBlockZ() >> 4) == chunk.getZ()
+				);
+			})
+			.forEach(shop -> createDisplayItem(shop, null));
+	}
+
+	public void cleanup() {
+		cleanupDisplayItems();
+		saveAll();
 	}
 }
