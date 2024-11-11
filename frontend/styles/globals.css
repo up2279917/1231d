@@ -1,0 +1,145 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+	margin: 0;
+	padding: 0;
+	overflow: overlay;
+}
+
+html {
+	scroll-behavior: smooth;
+}
+
+* {
+	box-sizing: border-box;
+	-webkit-font-smoothing: antialiased;
+}
+
+*::-webkit-scrollbar {
+	width: 0.3rem;
+	height: 0.3rem;
+}
+
+*::-webkit-scrollbar-thumb {
+	border-radius: 0.5rem;
+	background-color: #b0b0b062;
+}
+
+*::-webkit-scrollbar-track {
+	background-color: transparent;
+}
+
+/* ensure scrollbars are styled the same across browser */
+* {
+	scrollbar-width: thin;
+	scrollbar-color: #b0b0b062 transparent;
+}
+
+*:focus {
+	outline: none;
+	box-shadow: none;
+}
+
+@font-face {
+	font-family: "Grotesk";
+	src: url("fonts/PPRadioGrotesk-Regular.woff2") format("woff2");
+	font-weight: normal;
+	font-style: normal;
+}
+
+@font-face {
+	font-family: "Grotesk";
+	src: url("fonts/PPRadioGrotesk-Black.woff2") format("woff2");
+	font-weight: 900;
+	font-style: normal;
+}
+
+@font-face {
+	font-family: "Grotesk";
+	src: url("fonts/PPRadioGrotesk-BlackItalic.woff2") format("woff2");
+	font-weight: 900;
+	font-style: italic;
+}
+
+@font-face {
+	font-family: "Grotesk";
+	src: url("fonts/PPRadioGrotesk-Bold.woff2") format("woff2");
+	font-weight: 700;
+	font-style: normal;
+}
+
+@font-face {
+	font-family: "Grotesk";
+	src: url("fonts/PPRadioGrotesk-BoldItalic.woff2") format("woff2");
+	font-weight: 700;
+	font-style: italic;
+}
+
+@font-face {
+	font-family: "Grotesk";
+	src: url("fonts/PPRadioGrotesk-Regular.woff2") format("woff2");
+	font-weight: 500;
+	font-style: normal;
+}
+
+@font-face {
+	font-family: "Grotesk";
+	src: url("fonts/PPRadioGrotesk-RegularItalic.woff2") format("woff2");
+	font-weight: 500;
+	font-style: italic;
+}
+
+@font-face {
+	font-family: "Grotesk";
+	src: url("fonts/PPRadioGrotesk-Light.woff2");
+	font-weight: 300;
+	font-style: normal;
+}
+
+@font-face {
+	font-family: "Grotesk";
+	src: url("fonts/PPRadioGrotesk-LightItalic.woff2") format("woff2");
+	font-weight: 300;
+	font-style: italic;
+}
+
+@font-face {
+	font-family: "Grotesk";
+	src: url("fonts/PPRadioGrotesk-Light.woff2");
+	font-weight: 100;
+	font-style: normal;
+}
+
+@font-face {
+	font-family: "Grotesk";
+	src: url("fonts/PPRadioGrotesk-LightItalic.woff2") format("woff2");
+	font-weight: 100;
+	font-style: italic;
+}
+@font-face {
+	font-family: "Minecraft";
+	src: url("./fonts/Minecraft.ttf") format("truetype");
+	font-weight: normal;
+	font-style: normal;
+}
+
+.spinner::after {
+	content: "|";
+	display: inline-block;
+	animation: spinner 3s steps(4, end) infinite;
+}
+
+.overflow-y-auto {
+	-webkit-overflow-scrolling: touch;
+}
+
+.touch-pan-y {
+	touch-action: pan-y;
+	-webkit-overflow-scrolling: touch;
+}
+
+.scrollbar-thin {
+	scrollbar-width: thin;
+}

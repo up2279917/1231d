@@ -1,0 +1,65 @@
+
+D:\code\bytefish_minecraft\frontend
+├── D:\code\bytefish_minecraft\frontend\bun.lockb
+├── D:\code\bytefish_minecraft\frontend\Components
+|  ├── D:\code\bytefish_minecraft\frontend\Components\BiomeLegend.js
+|  ├── D:\code\bytefish_minecraft\frontend\Components\ByteFish.js
+|  ├── D:\code\bytefish_minecraft\frontend\Components\DimensionSwitcher.js
+|  ├── D:\code\bytefish_minecraft\frontend\Components\LayoutComponent.js
+|  ├── D:\code\bytefish_minecraft\frontend\Components\LoadingScreen.js
+|  ├── D:\code\bytefish_minecraft\frontend\Components\MapCanvas.js
+|  ├── D:\code\bytefish_minecraft\frontend\Components\Meta.js
+|  ├── D:\code\bytefish_minecraft\frontend\Components\Table.js
+|  └── D:\code\bytefish_minecraft\frontend\Components\ThemeWrapper.js
+├── D:\code\bytefish_minecraft\frontend\hooks
+|  └── D:\code\bytefish_minecraft\frontend\hooks\useGameData.js
+├── D:\code\bytefish_minecraft\frontend\jsconfig.json
+├── D:\code\bytefish_minecraft\frontend\lib
+|  └── D:\code\bytefish_minecraft\frontend\lib\theme.js
+├── D:\code\bytefish_minecraft\frontend\next.config.mjs
+├── D:\code\bytefish_minecraft\frontend\outer.txt
+├── D:\code\bytefish_minecraft\frontend\package-lock.json
+├── D:\code\bytefish_minecraft\frontend\package.json
+├── D:\code\bytefish_minecraft\frontend\pages
+|  ├── D:\code\bytefish_minecraft\frontend\pages\api
+|  ├── D:\code\bytefish_minecraft\frontend\pages\index.js
+|  ├── D:\code\bytefish_minecraft\frontend\pages\map.js
+|  ├── D:\code\bytefish_minecraft\frontend\pages\plugins.js
+|  ├── D:\code\bytefish_minecraft\frontend\pages\rules.js
+|  ├── D:\code\bytefish_minecraft\frontend\pages\_app.js
+|  └── D:\code\bytefish_minecraft\frontend\pages\_document.js
+├── D:\code\bytefish_minecraft\frontend\postcss.config.mjs
+├── D:\code\bytefish_minecraft\frontend\public
+|  ├── D:\code\bytefish_minecraft\frontend\public\data
+|  |  ├── D:\code\bytefish_minecraft\frontend\public\data\biome_data_end.json.gz
+|  |  ├── D:\code\bytefish_minecraft\frontend\public\data\biome_data_nt.json.gz
+|  |  └── D:\code\bytefish_minecraft\frontend\public\data\biome_data_ow.json.gz
+|  ├── D:\code\bytefish_minecraft\frontend\public\favicon.ico
+|  └── D:\code\bytefish_minecraft\frontend\public\images
+|     └── D:\code\bytefish_minecraft\frontend\public\images\icon.png
+├── D:\code\bytefish_minecraft\frontend\README.md
+├── D:\code\bytefish_minecraft\frontend\State
+|  └── D:\code\bytefish_minecraft\frontend\State\slice.js
+├── D:\code\bytefish_minecraft\frontend\styles
+|  ├── D:\code\bytefish_minecraft\frontend\styles\fonts
+|  |  ├── D:\code\bytefish_minecraft\frontend\styles\fonts\Minecraft.ttf
+|  |  ├── D:\code\bytefish_minecraft\frontend\styles\fonts\MonoLisa.woff2
+|  |  ├── D:\code\bytefish_minecraft\frontend\styles\fonts\PPRadioGrotesk-Black.woff2
+|  |  ├── D:\code\bytefish_minecraft\frontend\styles\fonts\PPRadioGrotesk-BlackItalic.woff2
+|  |  ├── D:\code\bytefish_minecraft\frontend\styles\fonts\PPRadioGrotesk-Bold.woff2
+|  |  ├── D:\code\bytefish_minecraft\frontend\styles\fonts\PPRadioGrotesk-BoldItalic.woff2
+|  |  ├── D:\code\bytefish_minecraft\frontend\styles\fonts\PPRadioGrotesk-Light.woff2
+|  |  ├── D:\code\bytefish_minecraft\frontend\styles\fonts\PPRadioGrotesk-LightItalic.woff2
+|  |  ├── D:\code\bytefish_minecraft\frontend\styles\fonts\PPRadioGrotesk-Regular.woff2
+|  |  ├── D:\code\bytefish_minecraft\frontend\styles\fonts\PPRadioGrotesk-RegularItalic.woff2
+|  |  ├── D:\code\bytefish_minecraft\frontend\styles\fonts\PPRadioGrotesk-Ultralight.woff2
+|  |  └── D:\code\bytefish_minecraft\frontend\styles\fonts\PPRadioGrotesk-UltralightItalic.woff2
+|  └── D:\code\bytefish_minecraft\frontend\styles\globals.css
+└── D:\code\bytefish_minecraft\frontend\tailwind.config.js
+
+directory: 1575 file: 17093
+
+ignored: directory (14)
+
+
+[2K[1G
