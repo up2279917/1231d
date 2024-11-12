@@ -6,6 +6,29 @@ const BIOME_TILE_SIZE = 16;
 const GRID_CELL_SIZE = 512;
 const RENDER_MARGIN = 1;
 
+const debounce = (func, wait) => {
+	let timeout;
+	return function executedFunction(...args) {
+		const later = () => {
+			clearTimeout(timeout);
+			func(...args);
+		};
+		clearTimeout(timeout);
+		timeout = setTimeout(later, wait);
+	};
+};
+
+const throttle = (func, limit) => {
+	let inThrottle;
+	return function (...args) {
+		if (!inThrottle) {
+			func.apply(this, args);
+			inThrottle = true;
+			setTimeout(() => (inThrottle = false), limit);
+		}
+	};
+};
+
 const MapCanvas = React.forwardRef(
 	(
 		{

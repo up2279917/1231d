@@ -49,43 +49,77 @@ const ServerButton = ({ ip }) => {
 };
 
 export default function Minecraft() {
-	const [health, setHealth] = useState({ status: "down" });
+	const [health, setHealth] = useState({ status: "unknown" });
 	const [stats, setStats] = useState({
 		onlinePlayers: [],
 		playerCount: 0,
 		tps: 0,
 	});
+	const [error, setError] = useState(null);
 	const state = useSelector((state) => state.state);
 	const dispatch = useDispatch();
 
 	useEffect(() => {
 		const fetchHealth = async () => {
 			try {
-				const response = await axios.get("https://mcsrv.bytefi.sh/api/health", {
-					headers: {
-						"Cache-Control": "max-age=5",
-					},
-				});
-				setHealth(response.data || { status: "down" });
+				const response = await axios
+					.get("https://mcsrv.bytefi.sh/api/health", {
+						headers: {
+							"Cache-Control": "max-age=5",
+						},
+						timeout: 5000,
+						validateStatus: function (status) {
+							// Consider any status less than 500 as success
+							return status < 500;
+						},
+					})
+					.catch((err) => {
+						setHealth({ status: "down" });
+						setError("Server is currently unavailable");
+					});
+
+				if (!response || response?.data?.status === "down") {
+					setHealth({ status: "down" });
+					setError("Server is currently unavailable");
+					return;
+				}
+
+				setHealth(response.data || { status: "unknown" });
+				setError(null);
 			} catch (error) {
 				console.error("Health check failed:", error);
 				setHealth({ status: "down" });
+				// Set a user-friendly error message
+				setError(
+					error.response?.data?.message ||
+						"Unable to connect to the server. Please try again later.",
+				);
 			}
 		};
 
 		const fetchStats = async () => {
 			try {
-				const response = await axios.get("https://mcsrv.bytefi.sh/api/stats", {
-					headers: {
-						"Cache-Control": "max-age=5",
-					},
-				});
+				const response = await axios
+					.get("https://mcsrv.bytefi.sh/api/stats", {
+						headers: {
+							"Cache-Control": "max-age=5",
+						},
+						timeout: 5000,
+						validateStatus: function (status) {
+							return status < 500;
+						},
+					})
+					.catch((err) => {
+						setHealth({ status: "down" });
+						setError("Server is currently unavailable");
+						return;
+					});
 
-				if (response.data) {
+				if (response && response.data) {
 					const validatedStats = {
 						onlinePlayers: Array.isArray(response.data.onlinePlayers)
 							? response.data.onlinePlayers
-									.filter((player) => player && player.name) // Filter out invalid players
+									.filter((player) => player && player.name)
 									.map((player) => ({
 										name: player.name,
 										isOperator: !!player.isOperator,
@@ -95,10 +129,15 @@ export default function Minecraft() {
 						tps: Number(response.data.tps) || 0,
 					};
 					setStats(validatedStats);
+					setError(null);
 				}
 			} catch (error) {
 				console.error("Stats fetch failed:", error);
 				setStats({ onlinePlayers: [], playerCount: 0, tps: 0 });
+				setError(
+					error.response?.data?.message ||
+						"Unable to fetch server statistics. Please try again later.",
+				);
 			}
 		};
 

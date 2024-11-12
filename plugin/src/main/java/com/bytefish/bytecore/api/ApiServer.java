@@ -1,10 +1,14 @@
 package com.bytefish.bytecore.api;
 
 import com.bytefish.bytecore.ByteCore;
+import com.bytefish.bytecore.api.websocket.WebSocketHandler;
 import com.bytefish.bytecore.managers.*;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import java.util.*;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import org.bukkit.Bukkit;
 import spark.Spark;
@@ -16,6 +20,9 @@ public class ApiServer {
 	private final LocationManager locationManager;
 	private final WarningManager warningManager;
 	private final Gson gson;
+	private final ScheduledExecutorService scheduler =
+		Executors.newSingleThreadScheduledExecutor();
+	private final WebSocketHandler wsHandler;
 	private boolean isRunning;
 
 	public ApiServer(
@@ -32,6 +39,7 @@ public class ApiServer {
 			.setDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'")
 			.setPrettyPrinting()
 			.create();
+		this.wsHandler = new WebSocketHandler(plugin, gson);
 		this.isRunning = false;
 	}
 
@@ -41,11 +49,43 @@ public class ApiServer {
 		}
 
 		try {
+			// Stop any existing instance
+			Spark.stop();
+			Thread.sleep(100);
+
+			// Basic configuration
 			Spark.port(25578);
 			Spark.threadPool(20);
+
+			// WebSocket must be registered before any routes
+			Spark.webSocket("/ws", wsHandler);
+
+			// Now set up the regular routes
 			setupRoutes();
 
+			// Initialize and wait
+			Spark.init();
 			Spark.awaitInitialization();
+
+			// Start broadcast scheduler
+			scheduler.scheduleAtFixedRate(
+				() -> {
+					try {
+						wsHandler.broadcastData();
+					} catch (Exception e) {
+						plugin
+							.getLogger()
+							.severe(
+								"Error in broadcast scheduler: " +
+								e.getMessage()
+							);
+					}
+				},
+				0,
+				2,
+				TimeUnit.SECONDS
+			);
+
 			isRunning = true;
 			plugin.getLogger().info("API Server started on port 25578");
 		} catch (Exception e) {
@@ -53,6 +93,18 @@ public class ApiServer {
 				.getLogger()
 				.severe("Failed to start API server: " + e.getMessage());
 			e.printStackTrace();
+
+			// Cleanup on failure
+			try {
+				scheduler.shutdown();
+				Spark.stop();
+			} catch (Exception cleanupError) {
+				plugin
+					.getLogger()
+					.severe(
+						"Error during cleanup: " + cleanupError.getMessage()
+					);
+			}
 		}
 	}
 
@@ -172,6 +224,7 @@ public class ApiServer {
 		}
 
 		try {
+			scheduler.shutdown();
 			Spark.stop();
 			Spark.awaitStop();
 			isRunning = false;

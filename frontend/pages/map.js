@@ -24,6 +24,8 @@ import DimensionSwitcher from "@/Components/DimensionSwitcher";
 import BiomeLegend from "@/Components/BiomeLegend";
 import MapCanvas from "@/Components/MapCanvas";
 import LoadingScreen from "@/Components/LoadingScreen";
+import { useWebSocketData } from "@/lib/useWebSocket";
+import ConnectionStatus from "@/Components/ConnectionStatus";
 
 const FETCH_INTERVAL = 15000;
 const INITIAL_VIEWPORT = {
@@ -264,11 +266,10 @@ const saveToCache = async (key, value) => {
 };
 
 const MinecraftMap = () => {
-	const [players, setPlayers] = useState([]);
+	const { data, status, error, isConnected } = useWebSocketData();
+	const { players, locations } = data;
 	const [loading, setLoading] = useState(true); // Start with loading true
 	const [loadingBiomes, setLoadingBiomes] = useState(true); // Add biomes loading state
-	const [locations, setLocations] = useState([]);
-	const [error, setError] = useState(null);
 	const [transform, setTransform] = useState({
 		x: INITIAL_VIEWPORT.width / 2,
 		z: INITIAL_VIEWPORT.height / 2,
@@ -837,9 +838,6 @@ const MinecraftMap = () => {
 			updateDimensions();
 
 			try {
-				// Fetch initial data
-				await Promise.all([fetchBiomes(), fetchPlayers(), fetchLocations()]);
-
 				// Set initial state after data is loaded
 				setTransform((prev) => ({
 					...prev,
@@ -873,17 +871,6 @@ const MinecraftMap = () => {
 
 	const canvasRef = useRef(null);
 
-	const fetchLocations = async () => {
-		try {
-			const response = await fetch("https://mcsrv.bytefi.sh/api/locations");
-			if (!response.ok) throw new Error("Failed to fetch locations");
-			const data = await response.json();
-			setLocations(data);
-		} catch (err) {
-			console.error("Error fetching locations:", err);
-		}
-	};
-
 	const duplicatePlayers = useCallback((originalPlayers) => {
 		// Early return if no players
 		if (!originalPlayers.length) return [];
@@ -902,47 +889,6 @@ const MinecraftMap = () => {
 			z: templatePlayer.z + (Math.random() - 0.5) * 100,
 		}));
 	}, []);
-
-	const fetchPlayers = useCallback(async () => {
-		try {
-			const response = await fetch(
-				"https://mcsrv.bytefi.sh/api/players/locations",
-			);
-			if (!response.ok) throw new Error("Failed to fetch player data");
-			const data = await response.json();
-			if (!Array.isArray(data)) {
-				throw new Error("Invalid data format received");
-			}
-
-			const validData = data.filter(isValidPlayer);
-			setPlayers(validData);
-		} catch (err) {
-			console.error("Error fetching players:", err);
-			setError(err.message);
-			setPlayers([]);
-		} finally {
-			setLoading(false); // Always set loading to false when done
-		}
-	}, []);
-
-	useEffect(() => {
-		if (!isInitialized) return;
-
-		const playerInterval = setInterval(fetchPlayers, FETCH_INTERVAL);
-		const locationInterval = setInterval(fetchLocations, FETCH_INTERVAL);
-
-		return () => {
-			clearInterval(playerInterval);
-			clearInterval(locationInterval);
-		};
-	}, [isInitialized]);
-
-	useEffect(() => {
-		if (!mounted) return;
-		fetchLocations();
-		const interval = setInterval(fetchLocations, FETCH_INTERVAL);
-		return () => clearInterval(interval);
-	}, [mounted]);
 
 	useEffect(() => {
 		if (!isInitialized && viewportDimensions.width > 0) {
@@ -1082,9 +1028,12 @@ const MinecraftMap = () => {
 								<span>Go Back</span>
 							</div>
 						</Link>
-						<div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
-							<Icon path={mdiAccount} size={0.8} />
-							<span>{players.length} online</span>
+						<div className="flex items-center gap-4">
+							<ConnectionStatus status={status} error={error} />
+							<div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+								<Icon path={mdiAccount} size={0.8} />
+								<span>{players.length} online</span>
+							</div>
 						</div>
 					</div>
 
