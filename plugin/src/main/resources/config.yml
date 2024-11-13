@@ -12,6 +12,8 @@ shops:
     float-height: 1.1
     float-amplitude: 0.05
     float-frequency: 1.0
+    view-distance: 48
+    update-frequency: 2
 
 # Location Settings
 locations:

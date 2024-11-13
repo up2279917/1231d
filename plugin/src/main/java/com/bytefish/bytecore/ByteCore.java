@@ -41,17 +41,28 @@ public class ByteCore extends JavaPlugin {
 		);
 		apiServer.start();
 
-		getServer()
-			.getScheduler()
-			.runTaskLater(
-				this,
-				() -> {
-					if (shopManager != null) {
-						shopManager.recreateAllDisplayItems();
-					}
-				},
-				40L
-			);
+		if (shopManager != null) {
+			// Delay display item setup
+			getServer()
+				.getScheduler()
+				.runTaskLater(
+					this,
+					() -> {
+						shopManager.cleanupDisplayItems();
+						getServer()
+							.getScheduler()
+							.runTaskLater(
+								this,
+								() -> {
+									shopManager.recreateAllDisplayItems();
+									shopManager.startDisplayItemMaintenanceTask();
+								},
+								40L
+							);
+					},
+					60L
+				);
+		}
 
 		getLogger().info("ByteCore enabled successfully!");
 	}

@@ -23,6 +23,8 @@ public class ConfigManager {
 	private double displayItemHeight;
 	private double displayItemAmplitude;
 	private double displayItemFrequency;
+	private int displayViewDistance;
+	private int displayUpdateFrequency;
 
 	public ConfigManager(JavaPlugin plugin) {
 		this.plugin = plugin;
@@ -64,6 +66,14 @@ public class ConfigManager {
 		displayItemFrequency = config.getDouble(
 			"shops.display-items.float-frequency",
 			2.0
+		);
+		displayViewDistance = config.getInt(
+			"shops.display-items.view-distance",
+			48
+		);
+		displayUpdateFrequency = config.getInt(
+			"shops.display-items.update-frequency",
+			2
 		);
 	}
 
@@ -172,5 +182,13 @@ public class ConfigManager {
 
 	public double getDisplayItemFrequency() {
 		return displayItemFrequency;
+	}
+
+	public int getDisplayViewDistance() {
+		return displayViewDistance;
+	}
+
+	public int getDisplayUpdateFrequency() {
+		return displayUpdateFrequency;
 	}
 }

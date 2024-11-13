@@ -29,6 +29,11 @@ import org.bukkit.block.data.type.WallSign;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.metadata.FixedMetadataValue;
@@ -49,6 +54,16 @@ public class ShopManager {
 	private static final String SHOP_DISPLAY_METADATA = "shop_display";
 	private final PlainTextComponentSerializer textSerializer =
 		PlainTextComponentSerializer.plainText();
+	private static final double DISPLAY_ITEM_CLEANUP_RADIUS = 0.5;
+	private final Set<Location> processingLocations =
+		Collections.synchronizedSet(new HashSet<>());
+	private final Object displayLock = new Object();
+	private final Set<String> activeChunkKeys = Collections.synchronizedSet(
+		new HashSet<>()
+	);
+	private static final int VIEW_DISTANCE = 48;
+	private final Map<Player, Set<Location>> playerTracking =
+		new ConcurrentHashMap<>();
 
 	public ShopManager(ByteCore plugin, ConfigManager config) {
 		this.plugin = plugin;
@@ -59,11 +74,25 @@ public class ShopManager {
 
 		if (config.isDisplayItemsEnabled()) {
 			startFloatingAnimation();
-			// Schedule recreation of display items after server is fully started
+			// Wait longer before initial recreation
 			plugin
 				.getServer()
 				.getScheduler()
-				.runTaskLater(plugin, () -> recreateAllDisplayItems(), 20L);
+				.runTaskLater(
+					plugin,
+					() -> {
+						cleanupDisplayItems();
+						plugin
+							.getServer()
+							.getScheduler()
+							.runTaskLater(
+								plugin,
+								this::recreateAllDisplayItems,
+								20L
+							);
+					},
+					40L
+				);
 		}
 	}
 
@@ -106,41 +135,44 @@ public class ShopManager {
 		}
 	}
 
+	private boolean isDisplayItem(Item item) {
+		return (
+			item.hasMetadata(SHOP_DISPLAY_METADATA) ||
+			(!item.hasGravity() && item.getPickupDelay() == Integer.MAX_VALUE)
+		);
+	}
+
 	public void recreateAllDisplayItems() {
-		// First, do a thorough cleanup of ALL possible display items
-		cleanupDisplayItems();
+		synchronized (displayLock) {
+			plugin
+				.getLogger()
+				.info("Starting recreation of all display items...");
 
-		// Wait 1 tick to ensure cleanup is complete
-		plugin
-			.getServer()
-			.getScheduler()
-			.runTaskLater(
-				plugin,
-				() -> {
-					shops.forEach((location, shop) -> {
-						if (
-							location.getWorld() != null &&
-							location
-								.getWorld()
-								.isChunkLoaded(
-									location.getBlockX() >> 4,
-									location.getBlockZ() >> 4
-								)
-						) {
-							createDisplayItem(shop, null);
-						}
-					});
+			// First, clean up but don't remove valid shop display items
+			cleanupDisplayItems();
 
-					plugin
-						.getLogger()
-						.info(
-							"Recreated display items for " +
-							displayItems.size() +
-							" shops"
-						);
-				},
-				1L
-			);
+			// Recreate display items for all shops
+			new HashMap<>(shops).forEach((location, shop) -> {
+				if (
+					location.getWorld() != null &&
+					location
+						.getWorld()
+						.isChunkLoaded(
+							location.getBlockX() >> 4,
+							location.getBlockZ() >> 4
+						)
+				) {
+					createDisplayItem(shop, null);
+
+					// Add a small delay between creations to prevent interference
+					try {
+						Thread.sleep(50);
+					} catch (InterruptedException e) {
+						Thread.currentThread().interrupt();
+					}
+				}
+			});
+		}
 	}
 
 	public boolean verifyShopSign(Location shopLocation) {
@@ -821,28 +853,54 @@ public class ShopManager {
 			@Override
 			public void run() {
 				tick += 0.05;
-				displayItems.forEach((loc, item) -> {
-					if (item != null && !item.isDead()) {
-						double newY =
-							loc.getY() +
-							config.getDisplayItemHeight() +
-							Math.sin(tick * config.getDisplayItemFrequency()) *
-							config.getDisplayItemAmplitude();
-						item.teleport(
-							new Location(
-								loc.getWorld(),
-								loc.getX() + 0.5,
-								newY,
-								loc.getZ() + 0.5,
-								item.getLocation().getYaw(),
-								item.getLocation().getPitch()
-							)
-						);
-					}
-				});
+				synchronized (displayLock) {
+					displayItems.forEach((loc, item) -> {
+						if (item != null && !item.isDead() && item.isValid()) {
+							// Only update if chunk is loaded and shop exists
+							if (
+								loc.getChunk().isLoaded() &&
+								shops.containsKey(loc)
+							) {
+								Location displayLoc = getDisplayLocation(
+									loc,
+									tick
+								);
+								// Only teleport if position has changed significantly
+								if (
+									item
+										.getLocation()
+										.distanceSquared(displayLoc) >
+									0.01
+								) {
+									item.teleport(displayLoc);
+								}
+							} else {
+								// Remove if chunk unloaded or shop no longer exists
+								item.remove();
+								displayItems.remove(loc);
+							}
+						} else {
+							displayItems.remove(loc);
+						}
+					});
+				}
 			}
 		}
-			.runTaskTimer(plugin, 1L, 1L);
+			.runTaskTimer(plugin, 1L, 2L);
+	}
+
+	private Location getDisplayLocation(Location shopLoc, double tick) {
+		// Using block center coordinates for precise positioning
+		return new Location(
+			shopLoc.getWorld(),
+			shopLoc.getBlockX() + 0.5,
+			shopLoc.getBlockY() +
+			config.getDisplayItemHeight() +
+			(Math.sin(tick * config.getDisplayItemFrequency()) *
+				config.getDisplayItemAmplitude() *
+				0.5),
+			shopLoc.getBlockZ() + 0.5
+		);
 	}
 
 	private void createDisplayItem(Shop shop, @Nullable Player owner) {
@@ -850,128 +908,308 @@ public class ShopManager {
 			return;
 		}
 
-		// If display items are enabled but op-only, and owner is specified and not op, skip display item
-		if (owner != null && config.isDisplayItemsOpOnly() && !owner.isOp()) {
-			return;
-		}
-
 		Location loc = shop.getLocation();
-		if (loc.getWorld() == null) {
-			plugin
-				.getLogger()
-				.warning(
-					"Attempted to create display item in null world for shop: " +
-					shop.getId()
-				);
+		if (loc.getWorld() == null || !loc.getChunk().isLoaded()) {
 			return;
 		}
 
-		// Remove any existing display at this location first
-		removeDisplayItem(loc);
+		if (!processingLocations.add(loc)) {
+			return;
+		}
 
-		// Create new display item
-		Item item = loc
-			.getWorld()
-			.dropItem(
-				loc.clone().add(0.5, config.getDisplayItemHeight(), 0.5),
-				shop.getSellingItem().clone()
-			);
+		try {
+			synchronized (displayLock) {
+				if (!shops.containsKey(loc)) {
+					return;
+				}
 
-		item.setPickupDelay(Integer.MAX_VALUE);
-		item.setPersistent(true);
-		item.setVelocity(new Vector(0, 0, 0));
-		item.setGravity(false);
-		item.setGlowing(false);
-		item.setMetadata(
-			SHOP_DISPLAY_METADATA,
-			new FixedMetadataValue(plugin, shop.getId().toString())
-		);
+				removeDisplayItem(loc);
 
-		displayItems.put(loc, item);
+				Location spawnLoc = getDisplayLocation(loc, 0);
+				Item item = loc
+					.getWorld()
+					.dropItem(spawnLoc, shop.getSellingItem().clone());
+
+				// Configure item with optimized settings
+				item.setPickupDelay(Integer.MAX_VALUE);
+				item.setPersistent(true);
+				item.setVelocity(new Vector(0, 0, 0));
+				item.setGravity(false);
+				item.setCustomNameVisible(false); // Hide nametag
+				item.setGlowing(false); // Ensure glowing is off
+				item.setInvulnerable(true); // Prevent damage
+
+				// Add metadata with shop ID
+				item.setMetadata(
+					SHOP_DISPLAY_METADATA,
+					new FixedMetadataValue(plugin, shop.getId().toString())
+				);
+
+				// Ensure exact positioning
+				item.teleport(spawnLoc);
+
+				displayItems.put(loc, item);
+			}
+		} finally {
+			processingLocations.remove(loc);
+		}
 	}
 
-	private void cleanupDisplayItems() {
-		new HashSet<>(displayItems.values()).forEach(item -> {
-			if (item != null && !item.isDead()) {
-				item.remove();
-			}
-		});
-		displayItems.clear();
+	public void cleanupDisplayItems() {
+		synchronized (displayLock) {
+			// Remove tracked items
+			new HashSet<>(displayItems.values()).forEach(item -> {
+				if (item != null && !item.isDead()) {
+					item.remove();
+				}
+			});
+			displayItems.clear();
+			processingLocations.clear();
 
-		for (World world : plugin.getServer().getWorlds()) {
-			world
-				.getEntities()
-				.stream()
-				.filter(entity -> entity instanceof Item)
-				.filter(entity -> entity.hasMetadata(SHOP_DISPLAY_METADATA))
-				.forEach(entity -> {
-					plugin
-						.getLogger()
-						.info(
-							"Removing orphaned shop display item at: " +
-							entity.getLocation()
-						);
-					entity.remove();
-				});
+			// Clean up any orphaned display items
+			for (World world : plugin.getServer().getWorlds()) {
+				for (Chunk chunk : world.getLoadedChunks()) {
+					for (Entity entity : chunk.getEntities()) {
+						if (
+							entity instanceof Item item && isDisplayItem(item)
+						) {
+							// Check if this item is at a valid shop location
+							Location itemLoc = item.getLocation();
+							Location blockLoc = itemLoc
+								.getBlock()
+								.getLocation();
+
+							// Only remove if it's not at a valid shop location
+							if (!shops.containsKey(blockLoc)) {
+								entity.remove();
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
 	private void removeDisplayItem(Location loc) {
-		Item item = displayItems.remove(loc);
-		if (item != null && !item.isDead()) {
-			item.remove();
-		}
+		synchronized (displayLock) {
+			// Remove from our tracking map
+			Item trackedItem = displayItems.remove(loc);
+			if (trackedItem != null && !trackedItem.isDead()) {
+				trackedItem.remove();
+			}
 
-		// Also check for any other items at this location that might be display items
-		if (loc.getWorld() != null) {
-			loc
-				.getWorld()
-				.getNearbyEntities(
-					loc.clone().add(0.5, config.getDisplayItemHeight(), 0.5),
-					0.5,
-					0.5,
-					0.5
-				)
-				.stream()
-				.filter(
-					entity ->
-						entity instanceof Item &&
-						entity.hasMetadata(SHOP_DISPLAY_METADATA)
-				)
-				.forEach(Entity::remove);
+			// Only remove items that are EXACTLY at our display position
+			if (loc.getWorld() != null) {
+				Location exactDisplayLoc = getDisplayLocation(loc, 0);
+				loc
+					.getWorld()
+					.getNearbyEntities(
+						exactDisplayLoc,
+						0.1,
+						0.1,
+						0.1,
+						entity ->
+							entity instanceof Item &&
+							(entity.hasMetadata(SHOP_DISPLAY_METADATA) ||
+								(!((Item) entity).hasGravity() &&
+									((Item) entity).getPickupDelay() ==
+									Integer.MAX_VALUE))
+					)
+					.forEach(Entity::remove);
+			}
 		}
+	}
+
+	private void ensureAllShopsHaveDisplayItems() {
+		plugin
+			.getLogger()
+			.info("Checking all shops for missing display items...");
+
+		shops.forEach((location, shop) -> {
+			if (location.getWorld() != null && location.getChunk().isLoaded()) {
+				// Check if this shop already has a valid display item
+				Item existingItem = displayItems.get(location);
+				boolean needsNewItem =
+					existingItem == null || existingItem.isDead();
+
+				if (!needsNewItem) {
+					// Verify the existing item is still in the correct position
+					Location itemLoc = existingItem.getLocation();
+					Location expectedLoc = location
+						.clone()
+						.add(0.5, config.getDisplayItemHeight(), 0.5);
+					if (itemLoc.distanceSquared(expectedLoc) > 0.25) { // If item has moved more than 0.5 blocks
+						needsNewItem = true;
+					}
+				}
+
+				if (needsNewItem) {
+					plugin
+						.getLogger()
+						.info(
+							"Recreating missing display item for shop at: " +
+							location
+						);
+					removeDisplayItem(location);
+					createDisplayItem(shop, null);
+				}
+			}
+		});
+	}
+
+	public void startDisplayItemMaintenanceTask() {
+		// Main display maintenance task - runs less frequently
+		plugin
+			.getServer()
+			.getScheduler()
+			.runTaskTimer(
+				plugin,
+				() -> {
+					synchronized (displayLock) {
+						// Update displays only in loaded chunks with players nearby
+						for (Player player : plugin
+							.getServer()
+							.getOnlinePlayers()) {
+							updateDisplaysForPlayer(player);
+						}
+					}
+				},
+				100L,
+				100L
+			);
+
+		// Item position update task - more frequent but lighter
+		new BukkitRunnable() {
+			double tick = 0;
+
+			@Override
+			public void run() {
+				tick += 0.05;
+				synchronized (displayLock) {
+					displayItems.forEach((loc, item) -> {
+						if (item != null && !item.isDead() && item.isValid()) {
+							Location displayLoc = getDisplayLocation(loc, tick);
+							if (
+								item.getLocation().distanceSquared(displayLoc) >
+								0.01
+							) {
+								item.teleport(displayLoc);
+							}
+						}
+					});
+				}
+			}
+		}
+			.runTaskTimer(plugin, 1L, 2L);
+
+		// Register the listener
+		plugin
+			.getServer()
+			.getPluginManager()
+			.registerEvents(new ShopDisplayListener(), plugin);
+	}
+
+	private void updateDisplaysForPlayer(Player player) {
+		Location playerLoc = player.getLocation();
+		Set<Location> visibleShops = playerTracking.computeIfAbsent(player, k ->
+			new HashSet<>()
+		);
+		Set<Location> newVisibleShops = new HashSet<>();
+
+		// Check all shops in loaded chunks
+		shops.forEach((location, shop) -> {
+			if (
+				location.getWorld().equals(player.getWorld()) &&
+				location
+					.getWorld()
+					.isChunkLoaded(
+						location.getBlockX() >> 4,
+						location.getBlockZ() >> 4
+					)
+			) {
+				double distance = playerLoc.distanceSquared(location);
+				if (distance <= VIEW_DISTANCE * VIEW_DISTANCE) {
+					newVisibleShops.add(location);
+					if (!visibleShops.contains(location)) {
+						// Shop just became visible
+						createDisplayItem(shop, null);
+					}
+				}
+			}
+		});
+
+		// Remove displays that are now out of range
+		visibleShops.forEach(loc -> {
+			if (!newVisibleShops.contains(loc)) {
+				removeDisplayItem(loc);
+			}
+		});
+
+		visibleShops.clear();
+		visibleShops.addAll(newVisibleShops);
 	}
 
 	public void handleChunkLoad(Chunk chunk) {
 		if (!config.isDisplayItemsEnabled()) return;
 
-		// Get all shops in this chunk
-		shops.forEach((location, shop) -> {
-			if (
-				location.getWorld().equals(chunk.getWorld()) &&
-				(location.getBlockX() >> 4) == chunk.getX() &&
-				(location.getBlockZ() >> 4) == chunk.getZ()
-			) {
-				// Remove any existing display item first
-				removeDisplayItem(location);
+		plugin
+			.getServer()
+			.getScheduler()
+			.runTaskLater(
+				plugin,
+				() -> {
+					// Only create displays for players within view distance
+					for (Player player : chunk.getWorld().getPlayers()) {
+						if (
+							Math.abs(
+									player.getLocation().getChunk().getX() -
+									chunk.getX()
+								) <=
+								3 &&
+							Math.abs(
+								player.getLocation().getChunk().getZ() -
+								chunk.getZ()
+							) <=
+							3
+						) {
+							updateDisplaysForPlayer(player);
+						}
+					}
+				},
+				20L
+			);
+	}
 
-				// Create new display item after a short delay
-				plugin
-					.getServer()
-					.getScheduler()
-					.runTaskLater(
-						plugin,
-						() -> {
-							createDisplayItem(shop, null);
-						},
-						5L
-					);
+	private class ShopDisplayListener implements Listener {
+
+		@EventHandler
+		public void onPlayerMove(PlayerMoveEvent event) {
+			if (event.hasChangedBlock()) {
+				updateDisplaysForPlayer(event.getPlayer());
 			}
-		});
+		}
+
+		@EventHandler
+		public void onPlayerJoin(PlayerJoinEvent event) {
+			playerTracking.put(event.getPlayer(), new HashSet<>());
+		}
+
+		@EventHandler
+		public void onPlayerQuit(PlayerQuitEvent event) {
+			playerTracking.remove(event.getPlayer());
+		}
+	}
+
+	private boolean isItemInCorrectPosition(Item item, Location shopLoc) {
+		Location expectedLoc = getDisplayLocation(shopLoc, 0);
+		return item.getLocation().distanceSquared(expectedLoc) <= 0.01; // Very precise check
 	}
 
 	public void cleanup() {
-		cleanupDisplayItems();
+		synchronized (displayLock) {
+			cleanupDisplayItems();
+			playerTracking.clear();
+		}
 		saveAll();
 	}
 }
