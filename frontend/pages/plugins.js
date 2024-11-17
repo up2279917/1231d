@@ -51,7 +51,8 @@ const plugins = [
 				Chest Shops
 			</a>
 		),
-		description: "Custom barrel shops, do /shophelp in-game.",
+		description:
+			"Custom barrel shops, do /shophelp in-game. You can use item IDs, just hold the item and do /itemname to get the ID.",
 		requirements: "None",
 		status: "enabled",
 	},
@@ -99,23 +100,19 @@ const plugins = [
 		status: "enabled",
 	},
 	{
-		id: 1,
-		name: <a className="text-ice-500 hover:text-ice-600">Voice Chat</a>,
-		description: "An optional proximity voice chat mod.",
-		requirements: (
-			<div>
-				Download and install via any mod launcher{" "}
-				<a
-					href="https://modrinth.com/plugin/simple-voice-chat/versions?l=forge"
-					className="text-ice-500 hover:text-ice-600"
-					target="_blank"
-				>
-					here
-				</a>
-				.
-			</div>
+		id: 413,
+		name: (
+			<a
+				href="https://mc.bytefi.sh/"
+				className="text-ice-500 hover:text-ice-600"
+			>
+				Anti-Grief
+			</a>
 		),
-		status: "disabled",
+		description:
+			"Creepers no longer destroy player-made blocks, they still do damage though.",
+		requirements: "None",
+		status: "enabled",
 	},
 ];
 
