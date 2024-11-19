@@ -4,41 +4,68 @@ import com.bytefish.bytecore.ByteCore;
 import com.bytefish.bytecore.config.ConfigManager;
 import com.bytefish.bytecore.models.Shop;
 import com.bytefish.bytecore.models.ShopTransaction;
+import com.bytefish.bytecore.util.ShopUtils;
+import com.bytefish.bytecore.util.StringUtils;
 import com.bytefish.bytecore.util.gson.TypeAdapters;
 import com.google.gson.*;
-import com.google.gson.annotations.Expose;
 import com.google.gson.reflect.TypeToken;
 import java.io.*;
 import java.lang.reflect.Type;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.JoinConfiguration;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import org.bukkit.*;
 import org.bukkit.Chunk;
+import org.bukkit.FluidCollisionMode;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.Container;
 import org.bukkit.block.Sign;
 import org.bukkit.block.data.type.WallSign;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.player.*;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
+import org.bukkit.event.world.ChunkLoadEvent;
+import org.bukkit.event.world.ChunkUnloadEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.EnchantmentStorageMeta;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.metadata.FixedMetadataValue;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.util.BoundingBox;
+import org.bukkit.util.RayTraceResult;
 import org.bukkit.util.Vector;
+import org.geysermc.floodgate.api.FloodgateApi;
 import org.jetbrains.annotations.Nullable;
 
 public class ShopManager {
@@ -52,17 +79,24 @@ public class ShopManager {
 	private final File shopsFile;
 	private final Gson gson;
 	private static final String SHOP_DISPLAY_METADATA = "shop_display";
-	private final PlainTextComponentSerializer textSerializer =
-		PlainTextComponentSerializer.plainText();
-	private static final double DISPLAY_ITEM_CLEANUP_RADIUS = 0.5;
+	private static final int VIEW_DISTANCE = 16; // Blocks, not chunks
+	private final Object displayLock = new Object();
 	private final Set<Location> processingLocations =
 		Collections.synchronizedSet(new HashSet<>());
-	private final Object displayLock = new Object();
-	private final Set<String> activeChunkKeys = Collections.synchronizedSet(
-		new HashSet<>()
-	);
-	private static final int VIEW_DISTANCE = 48;
-	private final Map<Player, Set<Location>> playerTracking =
+
+	private final Set<UUID> bedrockPlayers = ConcurrentHashMap.newKeySet();
+
+	private record ChunkPosition(String world, int x, int z) {
+		public boolean matches(Location loc) {
+			return (
+				loc.getWorld().getName().equals(world) &&
+				(loc.getBlockX() >> 4) == x &&
+				(loc.getBlockZ() >> 4) == z
+			);
+		}
+	}
+
+	private final Map<ChunkPosition, Set<Location>> chunkShopLocations =
 		new ConcurrentHashMap<>();
 
 	public ShopManager(ByteCore plugin, ConfigManager config) {
@@ -73,8 +107,6 @@ public class ShopManager {
 		loadShops();
 
 		if (config.isDisplayItemsEnabled()) {
-			startFloatingAnimation();
-			// Wait longer before initial recreation
 			plugin
 				.getServer()
 				.getScheduler()
@@ -90,69 +122,320 @@ public class ShopManager {
 								this::recreateAllDisplayItems,
 								20L
 							);
+						startDisplayUpdateTask();
 					},
 					40L
 				);
 		}
 	}
 
-	private Gson createGsonInstance() {
-		return new GsonBuilder()
-			.excludeFieldsWithoutExposeAnnotation()
-			.registerTypeAdapter(
-				Location.class,
-				new TypeAdapters.LocationAdapter()
-			)
-			.registerTypeAdapter(
-				ItemStack.class,
-				new TypeAdapters.ItemStackAdapter()
-			)
-			.setPrettyPrinting()
-			.create();
+	public void startDisplayUpdateTask() {
+		// Update display visibility every tick
+		new BukkitRunnable() {
+			@Override
+			public void run() {
+				for (Player player : plugin.getServer().getOnlinePlayers()) {
+					updateDisplaysForPlayer(player);
+				}
+			}
+		}
+			.runTaskTimer(plugin, 1L, 1L);
 	}
 
-	private static class OptionalTypeAdapter<T>
-		implements JsonSerializer<Optional<T>>, JsonDeserializer<Optional<T>> {
+	private boolean isPlayerLookingAtDisplay(
+		Player player,
+		Location displayLoc
+	) {
+		Location eyeLoc = player.getEyeLocation();
+		if (!eyeLoc.getWorld().equals(displayLoc.getWorld())) return false;
 
-		@Override
-		public JsonElement serialize(
-			Optional<T> src,
-			Type typeOfSrc,
-			JsonSerializationContext context
-		) {
-			return src.map(context::serialize).orElse(JsonNull.INSTANCE);
-		}
+		double distanceSquared = eyeLoc.distanceSquared(displayLoc);
+		if (distanceSquared > VIEW_DISTANCE * VIEW_DISTANCE) return false;
 
-		@Override
-		public Optional<T> deserialize(
-			JsonElement json,
-			Type typeOfT,
-			JsonDeserializationContext context
-		) throws JsonParseException {
-			return Optional.ofNullable(
-				json.isJsonNull() ? null : context.deserialize(json, typeOfT)
+		Vector toDisplay = displayLoc.clone().subtract(eyeLoc).toVector();
+		double angle = eyeLoc.getDirection().angle(toDisplay);
+		if (angle > Math.PI / 4) return false; // 45-degree view angle
+
+		// Wall check using ray trace
+		RayTraceResult rayTrace = player
+			.getWorld()
+			.rayTraceBlocks(
+				eyeLoc,
+				toDisplay.normalize(),
+				Math.sqrt(distanceSquared),
+				FluidCollisionMode.NEVER,
+				true
 			);
+
+		return rayTrace == null || rayTrace.getHitBlock() == null;
+	}
+
+	private void updateDisplaysForPlayer(Player player) {
+		Location playerLoc = player.getLocation();
+		final boolean isBedrock = isBedrockPlayer(player);
+		final int viewDistance = isBedrock
+			? Math.min(config.getDisplayViewDistance(), 32)
+			: config.getDisplayViewDistance(); // Reduced for Bedrock
+
+		displayItems.forEach((loc, item) -> {
+			if (item != null && item.isValid() && !item.isDead()) {
+				if (loc.getWorld().equals(playerLoc.getWorld())) {
+					double distanceSquared = loc.distanceSquared(playerLoc);
+					if (distanceSquared <= viewDistance * viewDistance) {
+						// Only show name for enchanted items
+						boolean isEnchanted = hasEnchantments(
+							item.getItemStack()
+						);
+						if (!isEnchanted) {
+							item.setCustomNameVisible(false);
+							return;
+						}
+
+						// Line of sight check with improved performance
+						boolean shouldShow = isPlayerLookingAtDisplayImproved(
+							player,
+							item.getLocation(),
+							isBedrock
+						);
+
+						// Update visibility state only if needed
+						if (item.isCustomNameVisible() != shouldShow) {
+							item.setCustomNameVisible(shouldShow);
+						}
+					} else {
+						item.setCustomNameVisible(false);
+					}
+				}
+			}
+		});
+	}
+
+	private boolean isBedrockPlayer(Player player) {
+		try {
+			return FloodgateApi.getInstance()
+				.isFloodgatePlayer(player.getUniqueId());
+		} catch (Exception e) {
+			return false;
 		}
 	}
 
-	private boolean isDisplayItem(Item item) {
-		return (
-			item.hasMetadata(SHOP_DISPLAY_METADATA) ||
-			(!item.hasGravity() && item.getPickupDelay() == Integer.MAX_VALUE)
+	private boolean isPlayerLookingAtDisplayImproved(
+		Player player,
+		Location displayLoc,
+		boolean isBedrock
+	) {
+		Location eyeLoc = player.getEyeLocation();
+		if (!eyeLoc.getWorld().equals(displayLoc.getWorld())) return false;
+
+		double distanceSquared = eyeLoc.distanceSquared(displayLoc);
+
+		// Adjusted view angle for Bedrock players
+		double maxAngle = isBedrock ? Math.PI / 3 : Math.PI / 4; // 60 degrees for Bedrock, 45 for Java
+
+		Vector toDisplay = displayLoc.clone().subtract(eyeLoc).toVector();
+		double angle = eyeLoc.getDirection().angle(toDisplay);
+		if (angle > maxAngle) return false;
+
+		// Optimized ray trace with reduced precision for better performance
+		RayTraceResult rayTrace = player
+			.getWorld()
+			.rayTraceBlocks(
+				eyeLoc,
+				toDisplay.normalize(),
+				Math.sqrt(distanceSquared),
+				FluidCollisionMode.NEVER,
+				true
+			);
+
+		return rayTrace == null || rayTrace.getHitBlock() == null;
+	}
+
+	private void createDisplayItem(Shop shop, @Nullable Player owner) {
+		Location loc = shop.getLocation();
+		if (!processingLocations.add(loc)) return;
+
+		try {
+			synchronized (displayLock) {
+				removeDisplayItem(loc);
+
+				if (
+					!loc
+						.getWorld()
+						.isChunkLoaded(
+							loc.getBlockX() >> 4,
+							loc.getBlockZ() >> 4
+						)
+				) {
+					return;
+				}
+
+				// Track shop location in chunk
+				ChunkPosition pos = new ChunkPosition(
+					loc.getWorld().getName(),
+					loc.getBlockX() >> 4,
+					loc.getBlockZ() >> 4
+				);
+				chunkShopLocations
+					.computeIfAbsent(pos, k -> ConcurrentHashMap.newKeySet())
+					.add(loc);
+
+				// Rest of the existing createDisplayItem code...
+				Location spawnLoc = getDisplayLocation(loc);
+				ItemStack displayItem = shop.getSellingItem().clone();
+				displayItem.setAmount(1);
+
+				Item item = loc.getWorld().dropItem(spawnLoc, displayItem);
+				item.setCustomNameVisible(false);
+				item.setGravity(false);
+				item.setInvulnerable(true);
+				item.setPickupDelay(Integer.MAX_VALUE);
+				item.setPersistent(true);
+				item.setVelocity(new Vector(0, 0, 0));
+
+				item.setMetadata(
+					SHOP_DISPLAY_METADATA,
+					new FixedMetadataValue(plugin, shop.getId().toString())
+				);
+
+				if (hasEnchantments(displayItem)) {
+					List<Component> enchantLore = ShopUtils.getEnchantmentLore(
+						displayItem
+					);
+					if (!enchantLore.isEmpty()) {
+						item.customName(
+							Component.join(Component.text(" "), enchantLore)
+						);
+					}
+				}
+
+				displayItems.put(loc, item);
+			}
+		} finally {
+			processingLocations.remove(loc);
+		}
+	}
+
+	private Location getDisplayLocation(Location shopLoc) {
+		return shopLoc.clone().add(0.5, config.getDisplayItemHeight(), 0.5);
+	}
+
+	@EventHandler(priority = EventPriority.MONITOR)
+	public void onChunkLoad(ChunkLoadEvent event) {
+		Chunk chunk = event.getChunk();
+		plugin
+			.getServer()
+			.getScheduler()
+			.runTaskLater(
+				plugin,
+				() -> {
+					if (!chunk.isLoaded()) return;
+
+					shops
+						.entrySet()
+						.stream()
+						.filter(entry -> isInChunk(entry.getKey(), chunk))
+						.forEach(entry ->
+							createDisplayItem(entry.getValue(), null)
+						);
+				},
+				2L
+			);
+	}
+
+	@EventHandler(priority = EventPriority.MONITOR)
+	public void onChunkUnload(ChunkUnloadEvent event) {
+		Chunk chunk = event.getChunk();
+		shops
+			.entrySet()
+			.stream()
+			.filter(entry -> isInChunk(entry.getKey(), chunk))
+			.forEach(entry -> removeDisplayItem(entry.getKey()));
+		ChunkPosition pos = new ChunkPosition(
+			chunk.getWorld().getName(),
+			chunk.getX(),
+			chunk.getZ()
 		);
+
+		// Schedule a delayed check for Bedrock players
+		plugin
+			.getServer()
+			.getScheduler()
+			.runTaskLater(
+				plugin,
+				() -> {
+					if (!chunk.isLoaded()) {
+						Set<Location> shopLocs = chunkShopLocations.get(pos);
+						if (shopLocs != null) {
+							chunk
+								.getWorld()
+								.getPlayers()
+								.stream()
+								.filter(p ->
+									bedrockPlayers.contains(p.getUniqueId())
+								)
+								.forEach(this::scheduleDisplayRefreshForPlayer);
+						}
+					}
+				},
+				20L
+			); // 1 second delay
+	}
+
+	private boolean isInChunk(Location location, Chunk chunk) {
+		return (
+			location.getWorld().equals(chunk.getWorld()) &&
+			(location.getBlockX() >> 4) == chunk.getX() &&
+			(location.getBlockZ() >> 4) == chunk.getZ()
+		);
+	}
+
+	private void removeDisplayItem(Location loc) {
+		synchronized (displayLock) {
+			// Remove from chunk tracking
+			ChunkPosition pos = new ChunkPosition(
+				loc.getWorld().getName(),
+				loc.getBlockX() >> 4,
+				loc.getBlockZ() >> 4
+			);
+			Set<Location> shopLocs = chunkShopLocations.get(pos);
+			if (shopLocs != null) {
+				shopLocs.remove(loc);
+				if (shopLocs.isEmpty()) {
+					chunkShopLocations.remove(pos);
+				}
+			}
+
+			// Existing removal code
+			Item item = displayItems.remove(loc);
+			if (item != null && !item.isDead()) {
+				item.remove();
+			}
+
+			if (loc.getWorld() != null) {
+				loc
+					.getWorld()
+					.getNearbyEntities(
+						getDisplayLocation(loc),
+						0.5,
+						0.5,
+						0.5,
+						entity ->
+							entity instanceof Item &&
+							(entity.hasMetadata(SHOP_DISPLAY_METADATA) ||
+								(!((Item) entity).hasGravity() &&
+									((Item) entity).getPickupDelay() ==
+									Integer.MAX_VALUE))
+					)
+					.forEach(Entity::remove);
+			}
+		}
 	}
 
 	public void recreateAllDisplayItems() {
 		synchronized (displayLock) {
-			plugin
-				.getLogger()
-				.info("Starting recreation of all display items...");
-
-			// First, clean up but don't remove valid shop display items
 			cleanupDisplayItems();
 
-			// Recreate display items for all shops
-			new HashMap<>(shops).forEach((location, shop) -> {
+			shops.forEach((location, shop) -> {
 				if (
 					location.getWorld() != null &&
 					location
@@ -163,66 +446,55 @@ public class ShopManager {
 						)
 				) {
 					createDisplayItem(shop, null);
-
-					// Add a small delay between creations to prevent interference
-					try {
-						Thread.sleep(50);
-					} catch (InterruptedException e) {
-						Thread.currentThread().interrupt();
-					}
 				}
 			});
 		}
 	}
 
-	public boolean verifyShopSign(Location shopLocation) {
-		Block container = shopLocation.getBlock();
+	public void cleanupDisplayItems() {
+		synchronized (displayLock) {
+			new HashSet<>(displayItems.values()).forEach(item -> {
+				if (item != null && !item.isDead()) {
+					item.remove();
+				}
+			});
+			displayItems.clear();
+			processingLocations.clear();
 
-		for (BlockFace face : new BlockFace[] {
-			BlockFace.NORTH,
-			BlockFace.SOUTH,
-			BlockFace.EAST,
-			BlockFace.WEST,
-		}) {
-			Block relative = container.getRelative(face);
-
-			if (!(relative.getState() instanceof Sign sign)) {
-				continue;
-			}
-
-			if (!(relative.getBlockData() instanceof WallSign wallSign)) {
-				continue;
-			}
-
-			// Check if the sign is actually attached to our container
-			Block attachedBlock = relative.getRelative(
-				wallSign.getFacing().getOppositeFace()
-			);
-			if (
-				!attachedBlock.getType().isSolid() ||
-				!attachedBlock.equals(container)
-			) {
-				continue;
-			}
-
-			String firstLine = textSerializer.serialize(sign.line(0));
-			if (firstLine != null && firstLine.equalsIgnoreCase("Selling")) {
-				return true;
-			}
-		}
-		return false;
-	}
-
-	private void verifyShopIntegrity(Shop shop) {
-		if (!verifyShopSign(shop.getLocation())) {
+			// Clean up any stray display items
 			plugin
-				.getLogger()
-				.warning(
-					"Shop at " + shop.getLocation() + " is missing its sign!"
+				.getServer()
+				.getWorlds()
+				.forEach(world ->
+					world
+						.getEntities()
+						.stream()
+						.filter(entity -> entity instanceof Item)
+						.map(entity -> (Item) entity)
+						.filter(
+							item ->
+								!item.hasGravity() ||
+								item.hasMetadata(SHOP_DISPLAY_METADATA)
+						)
+						.forEach(Entity::remove)
 				);
 		}
 	}
 
+	private boolean hasEnchantments(ItemStack item) {
+		if (item == null) return false;
+
+		if (item.getType() == Material.ENCHANTED_BOOK) {
+			if (
+				!(item.getItemMeta() instanceof EnchantmentStorageMeta meta)
+			) return false;
+			return !meta.getStoredEnchants().isEmpty();
+		}
+
+		return !item.getEnchantments().isEmpty();
+	}
+
+	// Shop Management Methods
 	public Shop addShop(
 		Location location,
 		Player owner,
@@ -266,6 +538,231 @@ public class ShopManager {
 		return shop;
 	}
 
+	public void removeShop(Location location) {
+		removeDisplayItem(location);
+		shops.remove(location);
+		shopLocks.remove(location);
+		saveAll();
+	}
+
+	public boolean isValidShopLocation(Location location) {
+		return config.isValidShopContainer(location.getBlock().getType());
+	}
+
+	public Shop getShop(Location location) {
+		return shops.get(location);
+	}
+
+	public boolean isShop(Location location) {
+		return shops.containsKey(location);
+	}
+
+	@EventHandler(priority = EventPriority.MONITOR)
+	public void onPlayerMove(PlayerMoveEvent event) {
+		// Only check if they've moved to a new chunk
+		Chunk fromChunk = event.getFrom().getChunk();
+		Chunk toChunk = event.getTo().getChunk();
+
+		if (
+			fromChunk.getX() != toChunk.getX() ||
+			fromChunk.getZ() != toChunk.getZ()
+		) {
+			Player player = event.getPlayer();
+			Location loc = event.getTo();
+			int chunkX = loc.getBlockX() >> 4;
+			int chunkZ = loc.getBlockZ() >> 4;
+
+			for (int dx = -1; dx <= 1; dx++) {
+				for (int dz = -1; dz <= 1; dz++) {
+					Chunk chunk = loc
+						.getWorld()
+						.getChunkAt(chunkX + dx, chunkZ + dz);
+					if (chunk.isLoaded()) {
+						// If the chunk is loaded, make sure the displays are created
+						handleChunkDisplays(chunk);
+					}
+				}
+			}
+		}
+
+		updateDisplaysForPlayer(event.getPlayer());
+	}
+
+	private void handleChunkDisplays(Chunk chunk) {
+		shops
+			.entrySet()
+			.stream()
+			.filter(entry -> isInChunk(entry.getKey(), chunk))
+			.forEach(entry -> {
+				if (displayItems.get(entry.getKey()) == null) {
+					createDisplayItem(entry.getValue(), null);
+				}
+			});
+	}
+
+	@EventHandler(priority = EventPriority.MONITOR)
+	public void onPlayerTeleport(PlayerTeleportEvent event) {
+		plugin
+			.getServer()
+			.getScheduler()
+			.runTaskLater(
+				plugin,
+				() -> updateDisplaysForPlayer(event.getPlayer()),
+				1L
+			);
+	}
+
+	@EventHandler(priority = EventPriority.MONITOR)
+	public void onPlayerJoin(PlayerJoinEvent event) {
+		Player player = event.getPlayer();
+		if (isBedrockPlayer(player)) {
+			bedrockPlayers.add(player.getUniqueId());
+			scheduleDisplayRefreshForPlayer(player);
+		}
+
+		plugin
+			.getServer()
+			.getScheduler()
+			.runTaskLater(
+				plugin,
+				() -> updateDisplaysForPlayer(event.getPlayer()),
+				5L
+			);
+	}
+
+	@EventHandler(priority = EventPriority.MONITOR)
+	public void onPlayerQuit(PlayerQuitEvent event) {
+		bedrockPlayers.remove(event.getPlayer().getUniqueId());
+	}
+
+	@EventHandler(priority = EventPriority.HIGH)
+	public void onBlockBreak(BlockBreakEvent event) {
+		Block block = event.getBlock();
+		Location loc = block.getLocation();
+
+		if (shops.containsKey(loc)) {
+			Shop shop = shops.get(loc);
+			if (!event.getPlayer().getUniqueId().equals(shop.getOwnerUUID())) {
+				event.setCancelled(true);
+				return;
+			}
+
+			removeShop(loc);
+			event
+				.getPlayer()
+				.sendMessage(
+					Component.text("Shop removed successfully!").color(
+						NamedTextColor.GREEN
+					)
+				);
+		}
+	}
+
+	private void scheduleDisplayRefreshForPlayer(Player player) {
+		if (!bedrockPlayers.contains(player.getUniqueId())) return;
+
+		// Initial refresh
+		refreshDisplaysForPlayer(player);
+
+		// Schedule periodic refreshes while the player is online
+		new BukkitRunnable() {
+			private int count = 0;
+
+			@Override
+			public void run() {
+				if (
+					!player.isOnline() ||
+					!bedrockPlayers.contains(player.getUniqueId())
+				) {
+					cancel();
+					return;
+				}
+
+				// Full refresh every 30 seconds
+				if (count++ % 30 == 0) {
+					refreshDisplaysForPlayer(player);
+				} else {
+					// Quick visibility update
+					updateDisplayVisibilityForPlayer(player);
+				}
+			}
+		}
+			.runTaskTimer(plugin, 20L, 20L); // Run every second
+	}
+
+	private void updateDisplayVisibilityForPlayer(Player player) {
+		Location playerLoc = player.getLocation();
+		int viewDistance = Math.min(config.getDisplayViewDistance(), 32);
+
+		displayItems.forEach((loc, item) -> {
+			if (item != null && item.isValid() && !item.isDead()) {
+				if (loc.getWorld().equals(playerLoc.getWorld())) {
+					double distanceSquared = loc.distanceSquared(playerLoc);
+					if (distanceSquared <= viewDistance * viewDistance) {
+						boolean isEnchanted = hasEnchantments(
+							item.getItemStack()
+						);
+						boolean shouldShow =
+							isEnchanted &&
+							isPlayerLookingAtDisplayImproved(
+								player,
+								item.getLocation(),
+								true
+							);
+
+						if (item.isCustomNameVisible() != shouldShow) {
+							item.setCustomNameVisible(shouldShow);
+							// Force position update
+							item.teleport(item.getLocation());
+						}
+					} else {
+						item.setCustomNameVisible(false);
+					}
+				}
+			}
+		});
+	}
+
+	private void refreshDisplaysForPlayer(Player player) {
+		Location playerLoc = player.getLocation();
+		int viewDistance = Math.min(config.getDisplayViewDistance(), 32);
+		int chunkRadius = (viewDistance >> 4) + 1;
+
+		int playerChunkX = playerLoc.getBlockX() >> 4;
+		int playerChunkZ = playerLoc.getBlockZ() >> 4;
+
+		for (int dx = -chunkRadius; dx <= chunkRadius; dx++) {
+			for (int dz = -chunkRadius; dz <= chunkRadius; dz++) {
+				ChunkPosition pos = new ChunkPosition(
+					playerLoc.getWorld().getName(),
+					playerChunkX + dx,
+					playerChunkZ + dz
+				);
+
+				Set<Location> shopLocs = chunkShopLocations.get(pos);
+				if (shopLocs != null) {
+					shopLocs.forEach(loc -> {
+						if (
+							loc.distanceSquared(playerLoc) <=
+							viewDistance * viewDistance
+						) {
+							recreateDisplayItem(loc);
+						}
+					});
+				}
+			}
+		}
+	}
+
+	private void recreateDisplayItem(Location loc) {
+		Shop shop = shops.get(loc);
+		if (shop != null) {
+			removeDisplayItem(loc);
+			createDisplayItem(shop, null);
+		}
+	}
+
+	// Shop Transaction Methods
 	public ShopTransaction processTransaction(Shop shop, Player buyer) {
 		if (
 			!buyer.isOnline() ||
@@ -298,15 +795,6 @@ public class ShopManager {
 				return null;
 			}
 
-			if (!shops.containsKey(shop.getLocation())) {
-				buyer.sendMessage(
-					Component.text("This shop no longer exists!").color(
-						NamedTextColor.RED
-					)
-				);
-				return null;
-			}
-
 			Block block = shop.getLocation().getBlock();
 			if (!(block.getState() instanceof Container container)) {
 				buyer.sendMessage(
@@ -324,29 +812,10 @@ public class ShopManager {
 				shop.getPriceItem()
 			);
 
-			// Log inventory verification
-			if (!verifyInventories(buyer, container)) {
-				transaction.fail("Invalid inventory state");
-				buyer.sendMessage(
-					Component.text("Your inventory state is invalid!").color(
-						NamedTextColor.RED
-					)
-				);
-				return transaction;
-			}
-
-			// Log shop state verification
-			if (!verifyShopState(shop, container, transaction)) {
-				return transaction;
-			}
-
-			// Log buyer inventory verification
-			if (!verifyBuyerInventory(buyer, shop, transaction)) {
-				return transaction;
-			}
-
-			// Execute the transaction
-			if (!executeTransaction(shop, buyer, container, transaction)) {
+			if (
+				!verifyInventories(buyer, container, transaction) ||
+				!executeTransaction(shop, buyer, container, transaction)
+			) {
 				return transaction;
 			}
 
@@ -367,23 +836,59 @@ public class ShopManager {
 		}
 	}
 
-	private boolean verifyInventories(Player buyer, Container container) {
-		return (
-			buyer.isOnline() &&
-			container.getInventory() != null &&
-			buyer.getInventory() != null
-		);
+	public boolean verifyShopSign(Location shopLocation) {
+		Block container = shopLocation.getBlock();
+
+		for (BlockFace face : new BlockFace[] {
+			BlockFace.NORTH,
+			BlockFace.SOUTH,
+			BlockFace.EAST,
+			BlockFace.WEST,
+		}) {
+			Block relative = container.getRelative(face);
+
+			if (!(relative.getState() instanceof Sign sign)) {
+				continue;
+			}
+
+			if (!(relative.getBlockData() instanceof WallSign wallSign)) {
+				continue;
+			}
+
+			Block attachedBlock = relative.getRelative(
+				wallSign.getFacing().getOppositeFace()
+			);
+			if (
+				!attachedBlock.getType().isSolid() ||
+				!attachedBlock.equals(container)
+			) {
+				continue;
+			}
+
+			String firstLine = PlainTextComponentSerializer.plainText()
+				.serialize(sign.line(0));
+			if (firstLine != null && firstLine.equalsIgnoreCase("Selling")) {
+				return true;
+			}
+		}
+		return false;
 	}
 
-	private boolean verifyShopState(
-		Shop shop,
+	private boolean verifyInventories(
+		Player buyer,
 		Container container,
 		ShopTransaction transaction
 	) {
-		if (!shops.containsKey(shop.getLocation())) {
-			transaction.fail("Shop no longer exists");
+		if (
+			!buyer.isOnline() ||
+			container.getInventory() == null ||
+			buyer.getInventory() == null
+		) {
+			transaction.fail("Invalid inventory state");
 			return false;
 		}
+
+		Shop shop = transaction.getShop();
 
 		if (
 			!hasStock(
@@ -393,6 +898,11 @@ public class ShopManager {
 			)
 		) {
 			transaction.fail("Shop is out of stock");
+			buyer.sendMessage(
+				Component.text("This shop is out of stock!").color(
+					NamedTextColor.RED
+				)
+			);
 			return false;
 		}
 
@@ -404,17 +914,14 @@ public class ShopManager {
 			)
 		) {
 			transaction.fail("Shop is full and cannot accept payment");
+			buyer.sendMessage(
+				Component.text(
+					"This shop is full and cannot accept payment!"
+				).color(NamedTextColor.RED)
+			);
 			return false;
 		}
 
-		return true;
-	}
-
-	public boolean verifyBuyerInventory(
-		Player buyer,
-		Shop shop,
-		ShopTransaction transaction
-	) {
 		if (
 			!hasItems(
 				buyer.getInventory(),
@@ -423,6 +930,11 @@ public class ShopManager {
 			)
 		) {
 			transaction.fail("Insufficient payment items");
+			buyer.sendMessage(
+				Component.text("You don't have enough payment items!").color(
+					NamedTextColor.RED
+				)
+			);
 			return false;
 		}
 
@@ -434,6 +946,11 @@ public class ShopManager {
 			)
 		) {
 			transaction.fail("Insufficient inventory space");
+			buyer.sendMessage(
+				Component.text("You don't have enough inventory space!").color(
+					NamedTextColor.RED
+				)
+			);
 			return false;
 		}
 
@@ -446,47 +963,49 @@ public class ShopManager {
 		Container container,
 		ShopTransaction transaction
 	) {
+		Inventory shopInv = container.getInventory();
+		Inventory buyerInv = buyer.getInventory();
+
+		// Remove items from shop
 		if (
 			!removeItems(
-				container.getInventory(),
+				shopInv,
 				shop.getSellingItem(),
 				shop.getSellingAmount()
 			)
 		) {
-			transaction.fail("Shop is out of stock");
+			transaction.fail("Failed to remove items from shop");
 			return false;
 		}
 
+		// Remove payment from buyer
 		if (
-			!removeItems(
-				buyer.getInventory(),
-				shop.getPriceItem(),
-				shop.getPriceAmount()
-			)
+			!removeItems(buyerInv, shop.getPriceItem(), shop.getPriceAmount())
 		) {
-			// Revert the shop inventory change
+			// Revert shop inventory change
 			ItemStack revertItem = shop.getSellingItem().clone();
 			revertItem.setAmount(shop.getSellingAmount());
-			container.getInventory().addItem(revertItem);
-			transaction.fail("Insufficient payment");
+			shopInv.addItem(revertItem);
+			transaction.fail("Failed to remove payment items");
 			return false;
 		}
 
 		// Complete the transaction
 		ItemStack sellingItems = shop.getSellingItem().clone();
 		sellingItems.setAmount(shop.getSellingAmount());
-		buyer.getInventory().addItem(sellingItems);
+		buyerInv.addItem(sellingItems);
 
 		ItemStack paymentItems = shop.getPriceItem().clone();
 		paymentItems.setAmount(shop.getPriceAmount());
-		container.getInventory().addItem(paymentItems);
+		shopInv.addItem(paymentItems);
 
 		return true;
 	}
 
+	// Inventory Utility Methods
 	public boolean hasItems(Inventory inventory, ItemStack item, int amount) {
 		int count = 0;
-		for (ItemStack stack : inventory.getContents()) {
+		for (ItemStack stack : inventory.getStorageContents()) {
 			if (stack != null && stack.isSimilar(item)) {
 				count += stack.getAmount();
 				if (count >= amount) return true;
@@ -496,7 +1015,14 @@ public class ShopManager {
 	}
 
 	public boolean hasStock(Inventory inventory, ItemStack item, int amount) {
-		return countItems(inventory, item) >= amount;
+		int count = 0;
+		for (ItemStack stack : inventory.getStorageContents()) {
+			if (stack != null && ShopUtils.areItemsEqual(stack, item)) {
+				count += stack.getAmount();
+				if (count >= amount) return true;
+			}
+		}
+		return false;
 	}
 
 	public boolean hasSpace(Inventory inventory, ItemStack item, int amount) {
@@ -511,7 +1037,7 @@ public class ShopManager {
 		ItemStack item,
 		int amount
 	) {
-		for (ItemStack stack : inventory.getContents()) {
+		for (ItemStack stack : inventory.getStorageContents()) {
 			if (
 				stack != null &&
 				stack.isSimilar(item) &&
@@ -523,23 +1049,36 @@ public class ShopManager {
 		return false;
 	}
 
-	private int countItems(Inventory inventory, ItemStack item) {
-		int count = 0;
-		for (ItemStack stack : inventory.getContents()) {
-			if (stack != null && stack.isSimilar(item)) {
-				count += stack.getAmount();
-			}
-		}
-		return count;
+	public void handleChunkLoad(Chunk chunk) {
+		if (!config.isDisplayItemsEnabled()) return;
+
+		plugin
+			.getServer()
+			.getScheduler()
+			.runTaskLater(
+				plugin,
+				() -> {
+					if (!chunk.isLoaded()) return;
+
+					shops
+						.entrySet()
+						.stream()
+						.filter(entry -> isInChunk(entry.getKey(), chunk))
+						.forEach(entry ->
+							createDisplayItem(entry.getValue(), null)
+						);
+				},
+				2L
+			);
 	}
 
-	public boolean removeItems(
+	private boolean removeItems(
 		Inventory inventory,
 		ItemStack item,
 		int amount
 	) {
 		int remaining = amount;
-		ItemStack[] contents = inventory.getContents();
+		ItemStack[] contents = inventory.getStorageContents();
 
 		for (int i = 0; i < contents.length && remaining > 0; i++) {
 			ItemStack stack = contents[i];
@@ -557,125 +1096,69 @@ public class ShopManager {
 		return remaining == 0;
 	}
 
-	public boolean isValidShopLocation(Location location) {
-		return config.isValidShopContainer(location.getBlock().getType());
-	}
-
-	public Shop getShop(Location location) {
-		return shops.get(location);
-	}
-
-	public boolean isShop(Location location) {
-		return shops.containsKey(location);
-	}
-
-	public void removeShop(Location location) {
-		removeDisplayItem(location);
-		shops.remove(location);
-		shopLocks.remove(location);
-		saveAll();
-	}
-
-	private void loadShops() {
-		File backupFile = new File(plugin.getDataFolder(), "shops.json.bak");
-
-		// Try loading main file first
-		if (shopsFile.exists()) {
-			if (loadShopsFromFile(shopsFile)) {
-				return;
-			}
-		}
-
-		// If main file failed or doesn't exist, try backup
-		if (backupFile.exists()) {
-			if (loadShopsFromFile(backupFile)) {
-				// If backup loaded successfully, save it as main file
-				try {
-					Files.copy(
-						backupFile.toPath(),
-						shopsFile.toPath(),
-						StandardCopyOption.REPLACE_EXISTING
-					);
-				} catch (IOException e) {
-					plugin
-						.getLogger()
-						.warning(
-							"Failed to restore backup file: " + e.getMessage()
-						);
-				}
-			}
-		}
-	}
-
+	// Data Persistence Methods
 	public synchronized void saveAll() {
 		File tempFile = new File(plugin.getDataFolder(), "shops.json.tmp");
 		File backupFile = new File(plugin.getDataFolder(), "shops.json.bak");
-		File targetFile = shopsFile;
 
 		try {
-			// Ensure plugin directory exists
 			plugin.getDataFolder().mkdirs();
 
-			// Write to temporary file first
+			// Write to temporary file
 			try (Writer writer = new FileWriter(tempFile)) {
 				List<Shop> shopList = new ArrayList<>(shops.values());
 				gson.toJson(shopList, writer);
-				writer.flush();
 			}
 
-			// If we have an existing file, create a backup
-			if (targetFile.exists()) {
+			// Create backup if main file exists
+			if (shopsFile.exists()) {
 				Files.copy(
-					targetFile.toPath(),
+					shopsFile.toPath(),
 					backupFile.toPath(),
 					StandardCopyOption.REPLACE_EXISTING
 				);
 			}
 
-			// Move temporary file to target location
+			// Move temp file to main location
 			Files.move(
 				tempFile.toPath(),
-				targetFile.toPath(),
+				shopsFile.toPath(),
 				StandardCopyOption.REPLACE_EXISTING
 			);
-
-			// Delete backup file if everything succeeded
-			if (backupFile.exists()) {
-				backupFile.delete();
-			}
+			backupFile.delete(); // Clean up backup if successful
 		} catch (IOException e) {
 			plugin
 				.getLogger()
 				.severe("Failed to save shops: " + e.getMessage());
-			e.printStackTrace();
-
-			// If we failed and have a backup, try to restore it
-			if (backupFile.exists() && !targetFile.exists()) {
+			// Attempt to restore from backup if save failed
+			if (backupFile.exists() && !shopsFile.exists()) {
 				try {
 					Files.move(
 						backupFile.toPath(),
-						targetFile.toPath(),
+						shopsFile.toPath(),
 						StandardCopyOption.REPLACE_EXISTING
 					);
 				} catch (IOException restoreError) {
 					plugin
 						.getLogger()
 						.severe(
-							"Failed to restore shops backup: " +
+							"Failed to restore backup: " +
 							restoreError.getMessage()
 						);
 				}
 			}
 		} finally {
-			// Clean up temporary file if it still exists
-			if (tempFile.exists()) {
-				tempFile.delete();
-			}
+			tempFile.delete(); // Clean up temp file
 		}
 	}
 
-	private boolean loadShopsFromFile(File file) {
-		try (Reader reader = new FileReader(file)) {
+	private void loadShops() {
+		if (!shopsFile.exists()) {
+			saveAll();
+			return;
+		}
+
+		try (Reader reader = new FileReader(shopsFile)) {
 			Type type = new TypeToken<List<Shop>>() {}.getType();
 			List<Shop> loadedShops = gson.fromJson(reader, type);
 
@@ -684,531 +1167,64 @@ public class ShopManager {
 				shopLocks.clear();
 
 				for (Shop shop : loadedShops) {
-					// Verify shop integrity but still load it
-					verifyShopIntegrity(shop);
 					shops.put(shop.getLocation(), shop);
 					shopLocks.put(shop.getLocation(), new ReentrantLock());
 				}
-				return true;
 			}
 		} catch (IOException e) {
 			plugin
 				.getLogger()
-				.severe(
-					"Failed to load shops from " +
-					file.getName() +
-					": " +
-					e.getMessage()
-				);
-		}
-		return false;
-	}
-
-	private static class LocationAdapter
-		implements JsonSerializer<Location>, JsonDeserializer<Location> {
-
-		@Override
-		public JsonElement serialize(
-			Location location,
-			Type type,
-			JsonSerializationContext context
-		) {
-			JsonObject object = new JsonObject();
-			object.addProperty("world", location.getWorld().getName());
-			object.addProperty("x", location.getX());
-			object.addProperty("y", location.getY());
-			object.addProperty("z", location.getZ());
-			return object;
-		}
-
-		@Override
-		public Location deserialize(
-			JsonElement element,
-			Type type,
-			JsonDeserializationContext context
-		) throws JsonParseException {
-			JsonObject object = element.getAsJsonObject();
-			String worldName = object.get("world").getAsString();
-			double x = object.get("x").getAsDouble();
-			double y = object.get("y").getAsDouble();
-			double z = object.get("z").getAsDouble();
-
-			return new Location(org.bukkit.Bukkit.getWorld(worldName), x, y, z);
-		}
-	}
-
-	private static class ItemStackAdapter
-		implements JsonSerializer<ItemStack>, JsonDeserializer<ItemStack> {
-
-		@Override
-		public JsonElement serialize(
-			ItemStack item,
-			Type type,
-			JsonSerializationContext context
-		) {
-			JsonObject object = new JsonObject();
-			object.addProperty("type", item.getType().name());
-			object.addProperty("amount", item.getAmount());
-
-			return object;
-		}
-
-		@Override
-		public ItemStack deserialize(
-			JsonElement element,
-			Type type,
-			JsonDeserializationContext context
-		) throws JsonParseException {
-			JsonObject object = element.getAsJsonObject();
-			String materialName = object.get("type").getAsString();
-			int amount = object.get("amount").getAsInt();
-
-			return new ItemStack(
-				org.bukkit.Material.valueOf(materialName),
-				amount
+				.severe("Failed to load shops: " + e.getMessage());
+			// Try to load from backup
+			File backupFile = new File(
+				plugin.getDataFolder(),
+				"shops.json.bak"
 			);
-		}
-	}
-
-	private static class ShopData {
-
-		private final UUID id;
-		private final LocationData location;
-		private final UUID ownerUUID;
-		private final String ownerName;
-		private final ItemStackData sellingItem;
-		private final int sellingAmount;
-		private final ItemStackData priceItem;
-		private final int priceAmount;
-		private final long creationTime;
-
-		public ShopData(Shop shop) {
-			this.id = shop.getId();
-			this.location = new LocationData(shop.getLocation());
-			this.ownerUUID = shop.getOwnerUUID();
-			this.ownerName = shop.getOwnerName();
-			this.sellingItem = new ItemStackData(shop.getSellingItem());
-			this.sellingAmount = shop.getSellingAmount();
-			this.priceItem = new ItemStackData(shop.getPriceItem());
-			this.priceAmount = shop.getPriceAmount();
-			this.creationTime = shop.getCreationTime();
-		}
-
-		public Shop toShop() {
-			Location loc = location.toLocation();
-			ItemStack selling = sellingItem.toItemStack();
-			ItemStack price = priceItem.toItemStack();
-			return new Shop(
-				id,
-				loc,
-				ownerUUID,
-				ownerName,
-				selling,
-				sellingAmount,
-				price,
-				priceAmount,
-				creationTime
-			);
-		}
-	}
-
-	private static class LocationData {
-
-		private final String world;
-		private final double x;
-		private final double y;
-		private final double z;
-
-		public LocationData(Location loc) {
-			this.world = loc.getWorld().getName();
-			this.x = loc.getX();
-			this.y = loc.getY();
-			this.z = loc.getZ();
-		}
-
-		public Location toLocation() {
-			return new Location(org.bukkit.Bukkit.getWorld(world), x, y, z);
-		}
-	}
-
-	private static class ItemStackData {
-
-		private final String type;
-		private final int amount;
-
-		public ItemStackData(ItemStack item) {
-			this.type = item.getType().name();
-			this.amount = item.getAmount();
-		}
-
-		public ItemStack toItemStack() {
-			return new ItemStack(org.bukkit.Material.valueOf(type), amount);
-		}
-	}
-
-	private void startFloatingAnimation() {
-		new BukkitRunnable() {
-			double tick = 0;
-
-			@Override
-			public void run() {
-				tick += 0.05;
-				synchronized (displayLock) {
-					displayItems.forEach((loc, item) -> {
-						if (item != null && !item.isDead() && item.isValid()) {
-							// Only update if chunk is loaded and shop exists
-							if (
-								loc.getChunk().isLoaded() &&
-								shops.containsKey(loc)
-							) {
-								Location displayLoc = getDisplayLocation(
-									loc,
-									tick
-								);
-								// Only teleport if position has changed significantly
-								if (
-									item
-										.getLocation()
-										.distanceSquared(displayLoc) >
-									0.01
-								) {
-									item.teleport(displayLoc);
-								}
-							} else {
-								// Remove if chunk unloaded or shop no longer exists
-								item.remove();
-								displayItems.remove(loc);
-							}
-						} else {
-							displayItems.remove(loc);
-						}
-					});
-				}
-			}
-		}
-			.runTaskTimer(plugin, 1L, 2L);
-	}
-
-	private Location getDisplayLocation(Location shopLoc, double tick) {
-		// Using block center coordinates for precise positioning
-		return new Location(
-			shopLoc.getWorld(),
-			shopLoc.getBlockX() + 0.5,
-			shopLoc.getBlockY() +
-			config.getDisplayItemHeight() +
-			(Math.sin(tick * config.getDisplayItemFrequency()) *
-				config.getDisplayItemAmplitude() *
-				0.5),
-			shopLoc.getBlockZ() + 0.5
-		);
-	}
-
-	private void createDisplayItem(Shop shop, @Nullable Player owner) {
-		if (!config.isDisplayItemsEnabled()) {
-			return;
-		}
-
-		Location loc = shop.getLocation();
-		if (loc.getWorld() == null || !loc.getChunk().isLoaded()) {
-			return;
-		}
-
-		if (!processingLocations.add(loc)) {
-			return;
-		}
-
-		try {
-			synchronized (displayLock) {
-				if (!shops.containsKey(loc)) {
-					return;
-				}
-
-				removeDisplayItem(loc);
-
-				Location spawnLoc = getDisplayLocation(loc, 0);
-				Item item = loc
-					.getWorld()
-					.dropItem(spawnLoc, shop.getSellingItem().clone());
-
-				// Configure item with optimized settings
-				item.setPickupDelay(Integer.MAX_VALUE);
-				item.setPersistent(true);
-				item.setVelocity(new Vector(0, 0, 0));
-				item.setGravity(false);
-				item.setCustomNameVisible(false); // Hide nametag
-				item.setGlowing(false); // Ensure glowing is off
-				item.setInvulnerable(true); // Prevent damage
-
-				// Add metadata with shop ID
-				item.setMetadata(
-					SHOP_DISPLAY_METADATA,
-					new FixedMetadataValue(plugin, shop.getId().toString())
-				);
-
-				// Ensure exact positioning
-				item.teleport(spawnLoc);
-
-				displayItems.put(loc, item);
-			}
-		} finally {
-			processingLocations.remove(loc);
-		}
-	}
-
-	public void cleanupDisplayItems() {
-		synchronized (displayLock) {
-			// Remove tracked items
-			new HashSet<>(displayItems.values()).forEach(item -> {
-				if (item != null && !item.isDead()) {
-					item.remove();
-				}
-			});
-			displayItems.clear();
-			processingLocations.clear();
-
-			// Clean up any orphaned display items
-			for (World world : plugin.getServer().getWorlds()) {
-				for (Chunk chunk : world.getLoadedChunks()) {
-					for (Entity entity : chunk.getEntities()) {
-						if (
-							entity instanceof Item item && isDisplayItem(item)
-						) {
-							// Check if this item is at a valid shop location
-							Location itemLoc = item.getLocation();
-							Location blockLoc = itemLoc
-								.getBlock()
-								.getLocation();
-
-							// Only remove if it's not at a valid shop location
-							if (!shops.containsKey(blockLoc)) {
-								entity.remove();
-							}
-						}
+			if (backupFile.exists()) {
+				try (Reader reader = new FileReader(backupFile)) {
+					Type type = new TypeToken<List<Shop>>() {}.getType();
+					List<Shop> loadedShops = gson.fromJson(reader, type);
+					if (loadedShops != null) {
+						shops.clear();
+						shopLocks.clear();
+						loadedShops.forEach(shop -> {
+							shops.put(shop.getLocation(), shop);
+							shopLocks.put(
+								shop.getLocation(),
+								new ReentrantLock()
+							);
+						});
+						saveAll(); // Save successful backup load as main file
 					}
-				}
-			}
-		}
-	}
-
-	private void removeDisplayItem(Location loc) {
-		synchronized (displayLock) {
-			// Remove from our tracking map
-			Item trackedItem = displayItems.remove(loc);
-			if (trackedItem != null && !trackedItem.isDead()) {
-				trackedItem.remove();
-			}
-
-			// Only remove items that are EXACTLY at our display position
-			if (loc.getWorld() != null) {
-				Location exactDisplayLoc = getDisplayLocation(loc, 0);
-				loc
-					.getWorld()
-					.getNearbyEntities(
-						exactDisplayLoc,
-						0.1,
-						0.1,
-						0.1,
-						entity ->
-							entity instanceof Item &&
-							(entity.hasMetadata(SHOP_DISPLAY_METADATA) ||
-								(!((Item) entity).hasGravity() &&
-									((Item) entity).getPickupDelay() ==
-									Integer.MAX_VALUE))
-					)
-					.forEach(Entity::remove);
-			}
-		}
-	}
-
-	private void ensureAllShopsHaveDisplayItems() {
-		plugin
-			.getLogger()
-			.info("Checking all shops for missing display items...");
-
-		shops.forEach((location, shop) -> {
-			if (location.getWorld() != null && location.getChunk().isLoaded()) {
-				// Check if this shop already has a valid display item
-				Item existingItem = displayItems.get(location);
-				boolean needsNewItem =
-					existingItem == null || existingItem.isDead();
-
-				if (!needsNewItem) {
-					// Verify the existing item is still in the correct position
-					Location itemLoc = existingItem.getLocation();
-					Location expectedLoc = location
-						.clone()
-						.add(0.5, config.getDisplayItemHeight(), 0.5);
-					if (itemLoc.distanceSquared(expectedLoc) > 0.25) { // If item has moved more than 0.5 blocks
-						needsNewItem = true;
-					}
-				}
-
-				if (needsNewItem) {
+				} catch (IOException backupError) {
 					plugin
 						.getLogger()
-						.info(
-							"Recreating missing display item for shop at: " +
-							location
+						.severe(
+							"Failed to load backup: " + backupError.getMessage()
 						);
-					removeDisplayItem(location);
-					createDisplayItem(shop, null);
-				}
-			}
-		});
-	}
-
-	public void startDisplayItemMaintenanceTask() {
-		// Main display maintenance task - runs less frequently
-		plugin
-			.getServer()
-			.getScheduler()
-			.runTaskTimer(
-				plugin,
-				() -> {
-					synchronized (displayLock) {
-						// Update displays only in loaded chunks with players nearby
-						for (Player player : plugin
-							.getServer()
-							.getOnlinePlayers()) {
-							updateDisplaysForPlayer(player);
-						}
-					}
-				},
-				100L,
-				100L
-			);
-
-		// Item position update task - more frequent but lighter
-		new BukkitRunnable() {
-			double tick = 0;
-
-			@Override
-			public void run() {
-				tick += 0.05;
-				synchronized (displayLock) {
-					displayItems.forEach((loc, item) -> {
-						if (item != null && !item.isDead() && item.isValid()) {
-							Location displayLoc = getDisplayLocation(loc, tick);
-							if (
-								item.getLocation().distanceSquared(displayLoc) >
-								0.01
-							) {
-								item.teleport(displayLoc);
-							}
-						}
-					});
 				}
 			}
 		}
-			.runTaskTimer(plugin, 1L, 2L);
-
-		// Register the listener
-		plugin
-			.getServer()
-			.getPluginManager()
-			.registerEvents(new ShopDisplayListener(), plugin);
 	}
 
-	private void updateDisplaysForPlayer(Player player) {
-		Location playerLoc = player.getLocation();
-		Set<Location> visibleShops = playerTracking.computeIfAbsent(player, k ->
-			new HashSet<>()
-		);
-		Set<Location> newVisibleShops = new HashSet<>();
-
-		// Check all shops in loaded chunks
-		shops.forEach((location, shop) -> {
-			if (
-				location.getWorld().equals(player.getWorld()) &&
-				location
-					.getWorld()
-					.isChunkLoaded(
-						location.getBlockX() >> 4,
-						location.getBlockZ() >> 4
-					)
-			) {
-				double distance = playerLoc.distanceSquared(location);
-				if (distance <= VIEW_DISTANCE * VIEW_DISTANCE) {
-					newVisibleShops.add(location);
-					if (!visibleShops.contains(location)) {
-						// Shop just became visible
-						createDisplayItem(shop, null);
-					}
-				}
-			}
-		});
-
-		// Remove displays that are now out of range
-		visibleShops.forEach(loc -> {
-			if (!newVisibleShops.contains(loc)) {
-				removeDisplayItem(loc);
-			}
-		});
-
-		visibleShops.clear();
-		visibleShops.addAll(newVisibleShops);
-	}
-
-	public void handleChunkLoad(Chunk chunk) {
-		if (!config.isDisplayItemsEnabled()) return;
-
-		plugin
-			.getServer()
-			.getScheduler()
-			.runTaskLater(
-				plugin,
-				() -> {
-					// Only create displays for players within view distance
-					for (Player player : chunk.getWorld().getPlayers()) {
-						if (
-							Math.abs(
-									player.getLocation().getChunk().getX() -
-									chunk.getX()
-								) <=
-								3 &&
-							Math.abs(
-								player.getLocation().getChunk().getZ() -
-								chunk.getZ()
-							) <=
-							3
-						) {
-							updateDisplaysForPlayer(player);
-						}
-					}
-				},
-				20L
-			);
-	}
-
-	private class ShopDisplayListener implements Listener {
-
-		@EventHandler
-		public void onPlayerMove(PlayerMoveEvent event) {
-			if (event.hasChangedBlock()) {
-				updateDisplaysForPlayer(event.getPlayer());
-			}
-		}
-
-		@EventHandler
-		public void onPlayerJoin(PlayerJoinEvent event) {
-			playerTracking.put(event.getPlayer(), new HashSet<>());
-		}
-
-		@EventHandler
-		public void onPlayerQuit(PlayerQuitEvent event) {
-			playerTracking.remove(event.getPlayer());
-		}
-	}
-
-	private boolean isItemInCorrectPosition(Item item, Location shopLoc) {
-		Location expectedLoc = getDisplayLocation(shopLoc, 0);
-		return item.getLocation().distanceSquared(expectedLoc) <= 0.01; // Very precise check
+	private Gson createGsonInstance() {
+		return new GsonBuilder()
+			.excludeFieldsWithoutExposeAnnotation()
+			.registerTypeAdapter(
+				Location.class,
+				new TypeAdapters.LocationAdapter()
+			)
+			.registerTypeAdapter(
+				ItemStack.class,
+				new TypeAdapters.ItemStackAdapter()
+			)
+			.setPrettyPrinting()
+			.create();
 	}
 
 	public void cleanup() {
 		synchronized (displayLock) {
 			cleanupDisplayItems();
-			playerTracking.clear();
 		}
 		saveAll();
 	}

@@ -30,6 +30,11 @@ commands:
   itemname:
     description: Get the name of the item you are holding
     usage: /itemname
+  shopfix:
+    description: Fixes shop display issues
+    usage: /shopfix
+    permission: bytecore.admin
+    permission-message: You don't have permission to use this command!
 
 permissions:
   bytecore.checklocations:

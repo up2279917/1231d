@@ -30,7 +30,6 @@ public class ByteCore extends JavaPlugin {
 		warningManager = new WarningManager(this);
 
 		registerCommands();
-
 		registerListeners();
 
 		apiServer = new ApiServer(
@@ -41,8 +40,7 @@ public class ByteCore extends JavaPlugin {
 		);
 		apiServer.start();
 
-		if (shopManager != null) {
-			// Delay display item setup
+		if (shopManager != null && configManager.isDisplayItemsEnabled()) {
 			getServer()
 				.getScheduler()
 				.runTaskLater(
@@ -53,14 +51,11 @@ public class ByteCore extends JavaPlugin {
 							.getScheduler()
 							.runTaskLater(
 								this,
-								() -> {
-									shopManager.recreateAllDisplayItems();
-									shopManager.startDisplayItemMaintenanceTask();
-								},
-								40L
+								() -> shopManager.recreateAllDisplayItems(),
+								20L
 							);
 					},
-					60L
+					40L
 				);
 		}
 
@@ -97,6 +92,7 @@ public class ByteCore extends JavaPlugin {
 			new CheckLocationsCommand(locationManager)
 		);
 		getCommand("itemname").setExecutor(new ItemNameCommand());
+		// getCommand("shopfix").setExecutor(new ShopFixCommand());
 	}
 
 	private void registerListeners() {

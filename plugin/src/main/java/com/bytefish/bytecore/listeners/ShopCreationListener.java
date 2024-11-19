@@ -3,8 +3,9 @@ package com.bytefish.bytecore.listeners;
 import com.bytefish.bytecore.config.ConfigManager;
 import com.bytefish.bytecore.managers.ShopManager;
 import com.bytefish.bytecore.models.Shop;
-import java.util.Arrays;
-import java.util.stream.Collectors;
+import com.bytefish.bytecore.util.ShopUtils;
+import com.bytefish.bytecore.util.StringUtils;
+import java.util.Map;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
@@ -12,7 +13,9 @@ import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
+import org.bukkit.block.Container;
 import org.bukkit.block.data.type.WallSign;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -20,6 +23,8 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.SignChangeEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.EnchantmentStorageMeta;
+import org.geysermc.floodgate.api.FloodgateApi;
 
 public class ShopCreationListener implements Listener {
 
@@ -74,18 +79,15 @@ public class ShopCreationListener implements Listener {
 			return;
 		}
 
-		// Always allow shop creation, regardless of display item settings
+		processShopCreation(event, attachedBlock);
+	}
+
+	private boolean isBedrockPlayer(Player player) {
 		try {
-			processShopCreation(event, attachedBlock);
-		} catch (IllegalArgumentException e) {
-			event
-				.getPlayer()
-				.sendMessage(
-					Component.text(
-						"Error creating shop: " + e.getMessage()
-					).color(NamedTextColor.RED)
-				);
-			event.setCancelled(true);
+			return FloodgateApi.getInstance()
+				.isFloodgatePlayer(player.getUniqueId());
+		} catch (Exception e) {
+			return false;
 		}
 	}
 
@@ -172,19 +174,28 @@ public class ShopCreationListener implements Listener {
 				);
 			}
 
-			Material sellingMaterial = getMaterialFromInput(
-				sellingParts[1].trim()
+			ItemStack sellingItem = getMaterialFromInput(
+				sellingParts[1].trim(),
+				event.getBlock()
 			);
-			Material priceMaterial = getMaterialFromInput(priceParts[1].trim());
-
-			if (sellingMaterial == null || priceMaterial == null) {
-				throw new IllegalArgumentException("Invalid item name or ID");
+			if (sellingItem == null) {
+				throw new IllegalArgumentException("Invalid selling item");
 			}
+			sellingItem.setAmount(sellingAmount);
+
+			ItemStack priceItem = getMaterialFromInput(
+				priceParts[1].trim(),
+				event.getBlock()
+			);
+			if (priceItem == null) {
+				throw new IllegalArgumentException("Invalid price item");
+			}
+			priceItem.setAmount(priceAmount);
 
 			return new ShopParseResult(
-				new ItemStack(sellingMaterial),
+				sellingItem,
 				sellingAmount,
-				new ItemStack(priceMaterial),
+				priceItem,
 				priceAmount
 			);
 		} catch (NumberFormatException e) {
@@ -192,78 +203,185 @@ public class ShopCreationListener implements Listener {
 		}
 	}
 
-	private Material getMaterialFromInput(String input) {
+	private ItemStack getMaterialFromInput(String input, Block signBlock) {
 		try {
+			// Try parsing as an ID first
 			int itemId = Integer.parseInt(input);
-			return Material.values()[itemId]; // Get Material by its ordinal value
-		} catch (NumberFormatException e) {
-			return Material.matchMaterial(input);
-		} catch (ArrayIndexOutOfBoundsException e) {
-			return null; // or handle it as you see fit
-		}
-	}
+			Material material = Material.values()[itemId];
+			if (material != null) {
+				ItemStack item = new ItemStack(material);
 
-	private String formatItemName(Material material, int amount) {
-		// Calculate maximum available space for the name
-		// Format: "99x" + name = 15 chars total
-		int amountSpace = String.valueOf(amount).length() + 1; // +1 for 'x'
-		int maxNameLength = 15 - amountSpace;
-
-		// Get the material name and format it
-		String[] words = material
-			.name()
-			.toLowerCase()
-			.replace('_', ' ')
-			.split(" ");
-
-		StringBuilder result = new StringBuilder();
-
-		// Try to fit as many words as possible
-		for (int i = 0; i < words.length; i++) {
-			String word = words[i];
-			// Capitalize first letter
-			word = word.substring(0, 1).toUpperCase() + word.substring(1);
-
-			// If this is not the first word, we need space for the space character
-			int spaceNeeded = result.length() > 0
-				? word.length() + 1
-				: word.length();
-
-			// If we can fit the whole word
-			if (result.length() + spaceNeeded <= maxNameLength) {
-				if (result.length() > 0) {
-					result.append(" ");
+				// Check container for enchanted version
+				Block container = getAttachedBlock(signBlock);
+				if (
+					container != null &&
+					container.getState() instanceof Container
+				) {
+					Container chest = (Container) container.getState();
+					for (ItemStack containerItem : chest
+						.getInventory()
+						.getContents()) {
+						if (
+							containerItem != null &&
+							containerItem.getType() == material
+						) {
+							if (
+								!containerItem.getEnchantments().isEmpty() ||
+								(containerItem.getType() ==
+										Material.ENCHANTED_BOOK &&
+									containerItem.getItemMeta() instanceof
+									EnchantmentStorageMeta meta &&
+									!meta.getStoredEnchants().isEmpty())
+							) {
+								return containerItem.clone();
+							}
+						}
+					}
 				}
-				result.append(word);
-			} else {
-				// If we can't fit the whole word, try to fit part of it
-				int remainingSpace = maxNameLength - result.length();
-				if (result.length() == 0 && remainingSpace > 0) {
-					// If this is the first word and we have space, take what we can
-					return word.substring(
-						0,
-						Math.min(word.length(), remainingSpace)
-					);
-				} else if (remainingSpace >= 4) { // Only add partial word if we can show at least 4 chars
-					if (result.length() > 0) result.append(" ");
-					result
-						.append(word.substring(0, remainingSpace - 1))
-						.append(".");
+				return item;
+			}
+		} catch (NumberFormatException | ArrayIndexOutOfBoundsException e) {
+			// If not a number, try as material name
+			Material material = Material.matchMaterial(input.toUpperCase());
+			if (material != null) {
+				ItemStack item = new ItemStack(material);
+
+				// Check container for enchanted version
+				Block container = getAttachedBlock(signBlock);
+				if (
+					container != null &&
+					container.getState() instanceof Container
+				) {
+					Container chest = (Container) container.getState();
+					for (ItemStack containerItem : chest
+						.getInventory()
+						.getContents()) {
+						if (
+							containerItem != null &&
+							containerItem.getType() == material
+						) {
+							if (
+								!containerItem.getEnchantments().isEmpty() ||
+								(containerItem.getType() ==
+										Material.ENCHANTED_BOOK &&
+									containerItem.getItemMeta() instanceof
+									EnchantmentStorageMeta meta &&
+									!meta.getStoredEnchants().isEmpty())
+							) {
+								return containerItem.clone();
+							}
+						}
+					}
 				}
-				break;
+				return item;
 			}
 		}
-
-		return result.toString();
+		throw new IllegalArgumentException("Invalid item: " + input);
 	}
 
-	private String truncateToSignLimit(String text) {
-		final int MAX_LENGTH = 15;
-		if (text.length() <= MAX_LENGTH) {
-			return text;
+	private void formatShopSign(
+		SignChangeEvent event,
+		ItemStack sellingItem,
+		int sellingAmount,
+		ItemStack priceItem,
+		int priceAmount
+	) {
+		Player player = event.getPlayer();
+		boolean isBedrock = false;
+		try {
+			isBedrock = FloodgateApi.getInstance()
+				.isFloodgatePlayer(player.getUniqueId());
+		} catch (Exception e) {
+			// FloodgateApi not available
 		}
 
-		return text.substring(0, MAX_LENGTH);
+		// Header
+		event.line(
+			0,
+			Component.text("Selling")
+				.color(NamedTextColor.GOLD)
+				.decorate(TextDecoration.BOLD)
+		);
+
+		String itemName = StringUtils.formatItemName(sellingItem.getType(), 1);
+		Component sellingLine;
+
+		if (isBedrock) {
+			sellingLine = Component.text()
+				.append(
+					Component.text(sellingAmount + "×", NamedTextColor.YELLOW)
+				)
+				.append(Component.text(itemName, NamedTextColor.AQUA))
+				.build();
+		} else {
+			sellingLine = Component.text()
+				.append(
+					Component.text(sellingAmount + "×", NamedTextColor.YELLOW)
+				)
+				.append(Component.text(itemName, NamedTextColor.AQUA))
+				.build();
+		}
+		event.line(1, sellingLine);
+
+		event.line(
+			2,
+			Component.text("For")
+				.color(NamedTextColor.GOLD)
+				.decorate(TextDecoration.BOLD)
+		);
+
+		// Price line
+		String priceItemName = StringUtils.formatItemName(
+			priceItem.getType(),
+			1
+		);
+		Component priceLine;
+		if (isBedrock) {
+			priceLine = Component.text()
+				.append(
+					Component.text(priceAmount + "×", NamedTextColor.YELLOW)
+				)
+				.append(Component.text(priceItemName, NamedTextColor.AQUA))
+				.build();
+		} else {
+			priceLine = Component.text()
+				.append(
+					Component.text(priceAmount + "×", NamedTextColor.YELLOW)
+				)
+				.append(Component.text(priceItemName, NamedTextColor.AQUA))
+				.build();
+		}
+		event.line(3, priceLine);
+	}
+
+	private Component formatItemComponent(ItemStack item, int amount) {
+		Component itemName;
+		if (item.getType() == Material.ENCHANTED_BOOK) {
+			EnchantmentStorageMeta meta =
+				(EnchantmentStorageMeta) item.getItemMeta();
+			if (meta != null && !meta.getStoredEnchants().isEmpty()) {
+				Map.Entry<Enchantment, Integer> firstEnchant = meta
+					.getStoredEnchants()
+					.entrySet()
+					.iterator()
+					.next();
+				String enchantName = ShopUtils.formatEnchantmentName(
+					firstEnchant.getKey()
+				);
+				itemName = Component.text(enchantName + " Book");
+			} else {
+				itemName = Component.text("Enchanted Book");
+			}
+		} else {
+			itemName = Component.text(
+				StringUtils.formatItemName(item.getType(), amount)
+			);
+		}
+
+		return Component.text()
+			.append(Component.text(amount + "×").color(NamedTextColor.YELLOW))
+			.append(itemName.color(NamedTextColor.AQUA))
+			.build();
 	}
 
 	private static class ShopParseResult {
@@ -312,27 +430,61 @@ public class ShopCreationListener implements Listener {
 					.decorate(TextDecoration.BOLD)
 			);
 
-			// Selling item line
-			String sellingItemName = formatItemName(
-				result.sellingItem.getType(),
-				result.sellingAmount
-			);
-			event.line(
-				1,
-				Component.text()
+			// Selling item line with enchantment handling
+			Component sellingLine;
+			if (result.sellingItem.getType() == Material.ENCHANTED_BOOK) {
+				EnchantmentStorageMeta meta =
+					(EnchantmentStorageMeta) result.sellingItem.getItemMeta();
+				if (meta != null && !meta.getStoredEnchants().isEmpty()) {
+					Map.Entry<Enchantment, Integer> firstEnchant = meta
+						.getStoredEnchants()
+						.entrySet()
+						.iterator()
+						.next();
+					sellingLine = Component.text()
+						.append(
+							Component.text(result.sellingAmount + "×").color(
+								NamedTextColor.YELLOW
+							)
+						)
+						.append(
+							Component.text(
+								ShopUtils.formatEnchantmentName(
+									firstEnchant.getKey()
+								) +
+								" Book"
+							).color(NamedTextColor.LIGHT_PURPLE)
+						)
+						.build();
+				} else {
+					sellingLine = Component.text()
+						.append(
+							Component.text(result.sellingAmount + "×").color(
+								NamedTextColor.YELLOW
+							)
+						)
+						.append(
+							Component.text("Enchanted Book").color(
+								NamedTextColor.AQUA
+							)
+						)
+						.build();
+				}
+			} else {
+				String itemName = StringUtils.formatItemName(
+					result.sellingItem.getType(),
+					1
+				);
+				sellingLine = Component.text()
 					.append(
-						Component.text(result.sellingAmount).color(
+						Component.text(result.sellingAmount + "×").color(
 							NamedTextColor.YELLOW
 						)
 					)
-					.append(Component.text("×").color(NamedTextColor.WHITE))
-					.append(
-						Component.text(sellingItemName).color(
-							NamedTextColor.AQUA
-						)
-					)
-					.build()
-			);
+					.append(Component.text(itemName).color(NamedTextColor.AQUA))
+					.build();
+			}
+			event.line(1, sellingLine);
 
 			// "For" line
 			event.line(
@@ -343,24 +495,22 @@ public class ShopCreationListener implements Listener {
 			);
 
 			// Price item line
-			String priceItemName = formatItemName(
-				result.priceItem.getType(),
-				result.priceAmount
-			);
-			event.line(
-				3,
-				Component.text()
-					.append(
-						Component.text(result.priceAmount).color(
-							NamedTextColor.YELLOW
+			Component priceLine = Component.text()
+				.append(
+					Component.text(result.priceAmount + "×").color(
+						NamedTextColor.YELLOW
+					)
+				)
+				.append(
+					Component.text(
+						StringUtils.formatItemName(
+							result.priceItem.getType(),
+							1
 						)
-					)
-					.append(Component.text("×").color(NamedTextColor.WHITE))
-					.append(
-						Component.text(priceItemName).color(NamedTextColor.AQUA)
-					)
-					.build()
-			);
+					).color(NamedTextColor.AQUA)
+				)
+				.build();
+			event.line(3, priceLine);
 
 			player.sendMessage(
 				Component.text("Shop created successfully!").color(

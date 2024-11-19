@@ -30,6 +30,7 @@ public class ShopHelpCommand implements CommandExecutor {
 
 		sender.sendMessage(Component.empty());
 
+		// Basic instructions
 		sender.sendMessage(
 			Component.text()
 				.append(Component.text("1. ", NamedTextColor.GOLD))
@@ -42,7 +43,31 @@ public class ShopHelpCommand implements CommandExecutor {
 				.append(Component.text("2. ", NamedTextColor.GOLD))
 				.append(
 					Component.text(
-						"Place a sign on any side",
+						"Place your items inside:",
+						NamedTextColor.WHITE
+					)
+				)
+				.build()
+		);
+
+		sender.sendMessage(
+			Component.text()
+				.append(Component.text("   • ", NamedTextColor.GRAY))
+				.append(
+					Component.text(
+						"For normal items: any amount",
+						NamedTextColor.WHITE
+					)
+				)
+				.build()
+		);
+
+		sender.sendMessage(
+			Component.text()
+				.append(Component.text("   • ", NamedTextColor.GRAY))
+				.append(
+					Component.text(
+						"For enchanted items: put the enchanted item in first",
 						NamedTextColor.WHITE
 					)
 				)
@@ -54,7 +79,19 @@ public class ShopHelpCommand implements CommandExecutor {
 				.append(Component.text("3. ", NamedTextColor.GOLD))
 				.append(
 					Component.text(
-						"Format the sign exactly like this:",
+						"Place a sign on any side",
+						NamedTextColor.WHITE
+					)
+				)
+				.build()
+		);
+
+		sender.sendMessage(
+			Component.text()
+				.append(Component.text("4. ", NamedTextColor.GOLD))
+				.append(
+					Component.text(
+						"Format the sign like this:",
 						NamedTextColor.WHITE
 					)
 				)
@@ -63,6 +100,7 @@ public class ShopHelpCommand implements CommandExecutor {
 
 		sender.sendMessage(Component.empty());
 
+		// Sign format example
 		sender.sendMessage(
 			Component.text()
 				.append(Component.text("Line 1: ", NamedTextColor.GRAY))
@@ -73,9 +111,9 @@ public class ShopHelpCommand implements CommandExecutor {
 		sender.sendMessage(
 			Component.text()
 				.append(Component.text("Line 2: ", NamedTextColor.GRAY))
-				.append(Component.text("10", NamedTextColor.YELLOW))
+				.append(Component.text("1", NamedTextColor.YELLOW))
 				.append(Component.text("x"))
-				.append(Component.text("diamond", NamedTextColor.AQUA))
+				.append(Component.text("diamond_sword", NamedTextColor.AQUA))
 				.build()
 		);
 
@@ -91,7 +129,47 @@ public class ShopHelpCommand implements CommandExecutor {
 				.append(Component.text("Line 4: ", NamedTextColor.GRAY))
 				.append(Component.text("64", NamedTextColor.YELLOW))
 				.append(Component.text("x"))
-				.append(Component.text("dirt", NamedTextColor.AQUA))
+				.append(Component.text("diamond", NamedTextColor.AQUA))
+				.build()
+		);
+
+		sender.sendMessage(Component.empty());
+
+		// Additional info
+		sender.sendMessage(
+			Component.text()
+				.append(
+					Component.text(
+						"For Enchanted Items:",
+						NamedTextColor.LIGHT_PURPLE
+					)
+				)
+				.build()
+		);
+
+		sender.sendMessage(
+			Component.text()
+				.append(Component.text("• ", NamedTextColor.GRAY))
+				.append(Component.text("Use ", NamedTextColor.WHITE))
+				.append(Component.text("/itemname", NamedTextColor.YELLOW))
+				.append(
+					Component.text(
+						" while holding the item to get its name",
+						NamedTextColor.WHITE
+					)
+				)
+				.build()
+		);
+
+		sender.sendMessage(
+			Component.text()
+				.append(Component.text("• ", NamedTextColor.GRAY))
+				.append(
+					Component.text(
+						"Put the enchanted item in the barrel first",
+						NamedTextColor.WHITE
+					)
+				)
 				.build()
 		);
 
